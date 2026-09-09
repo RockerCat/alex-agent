@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:migrations": "node scripts/check-migrations.mjs"
+    "test:migrations": "node scripts/check-migrations.mjs",
+    "test:grants": "node scripts/check-grants.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
