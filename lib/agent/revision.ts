@@ -9,10 +9,7 @@ import { callExecutor, estimateExecutorInputTokens, type RevisionInstruction } f
 import { validateDraft } from "@/lib/agent/draftValidator";
 import type { ContentBrief } from "@/lib/agent/schemas";
 import { env } from "@/lib/env";
-
-function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
-}
+import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
 
 function draftToBrief(draft: ContentDraftRow): ContentBrief {
   return {
@@ -48,6 +45,8 @@ export async function regenerateDraftContent(params: {
   factCorrection?: string;
 }): Promise<RegenerateOutcome> {
   const { db, aiClient, draft } = params;
+
+  await recoverStaleRuns(db, draft.brand);
 
   const { data: lockRun, error: lockError } = await db
     .from("agent_runs")

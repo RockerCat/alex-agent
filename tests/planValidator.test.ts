@@ -126,6 +126,35 @@ describe("planValidator", () => {
     expect(result.errors.some((e) => e.includes("duplicates"))).toBe(true);
   });
 
+  it("drops a brief that duplicates another brief within the same Planner response", () => {
+    const output = createPlanOutput({
+      content: [
+        {
+          purpose: "education",
+          channel: "instagram",
+          format: "carousel",
+          topic: "Cómo crear tu primera cotización",
+          audience: "aud",
+          cta: "cta",
+          targetDate: "2026-09-10",
+        },
+        {
+          purpose: "education",
+          channel: "instagram",
+          format: "carousel",
+          topic: "  cómo crear tu primera cotización  ",
+          audience: "aud",
+          cta: "cta",
+          targetDate: "2026-09-11",
+        },
+      ],
+    });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(1);
+    expect(result.errors.some((e) => e.includes("same response"))).toBe(true);
+  });
+
   it("rejects CREATE_PLAN when an active plan already exists", () => {
     const context = baseContext({
       activePlan: {

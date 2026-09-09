@@ -27,6 +27,10 @@ function isDuplicateOfExisting(brief: ContentBrief, context: AgentContext): bool
   );
 }
 
+function briefKey(brief: ContentBrief): string {
+  return `${brief.channel}::${brief.topic.trim().toLowerCase()}`;
+}
+
 /**
  * Enforces the AI/code responsibility boundary from spec section 10:
  * the Planner decides strategy/content, but application code enforces
@@ -75,6 +79,7 @@ export function validatePlannerOutput(
   const contentErrors: string[] = [];
 
   if (output.decision === "CREATE_PLAN" || output.decision === "CONTINUE_EXISTING_PLAN") {
+    const seenInThisResponse = new Set<string>();
     content = content.filter((brief) => {
       if (brief.targetDate < periodStart || brief.targetDate > periodEnd) {
         contentErrors.push(`Dropped brief "${brief.topic}": targetDate ${brief.targetDate} outside plan period ${periodStart}..${periodEnd}`);
@@ -84,6 +89,15 @@ export function validatePlannerOutput(
         contentErrors.push(`Dropped brief "${brief.topic}": duplicates an existing draft on ${brief.channel}`);
         return false;
       }
+      // A single Planner response can itself propose the same
+      // channel+topic twice — dedupe within the response too, not just
+      // against drafts that already exist from prior runs.
+      const key = briefKey(brief);
+      if (seenInThisResponse.has(key)) {
+        contentErrors.push(`Dropped brief "${brief.topic}": duplicates another brief in the same response on ${brief.channel}`);
+        return false;
+      }
+      seenInThisResponse.add(key);
       return true;
     });
 

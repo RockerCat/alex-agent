@@ -39,6 +39,7 @@ export default async function SettingsPage() {
                 step="0.01"
                 min="0"
                 name="monthly_budget_usd"
+                required
                 defaultValue={settings.monthly_budget_usd}
                 className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
                 style={{ borderColor: "var(--border)", background: "var(--background)" }}
@@ -51,6 +52,7 @@ export default async function SettingsPage() {
                 step="0.01"
                 min="0"
                 name="safety_reserve_usd"
+                required
                 defaultValue={settings.safety_reserve_usd}
                 className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
                 style={{ borderColor: "var(--border)", background: "var(--background)" }}
@@ -63,6 +65,7 @@ export default async function SettingsPage() {
                 step="0.01"
                 min="0"
                 name="per_run_budget_usd"
+                required
                 defaultValue={settings.per_run_budget_usd}
                 className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
                 style={{ borderColor: "var(--border)", background: "var(--background)" }}

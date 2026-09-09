@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
+import type { ReasoningEffort } from "openai/resources/shared";
 import { env } from "@/lib/env";
 import { plannerOutputSchema, executorOutputSchema, type PlannerOutput, type ExecutorOutput } from "@/lib/agent/schemas";
 import type { UsageTokens } from "@/lib/agent/pricing";
@@ -32,11 +33,25 @@ export interface AiClient {
   runExecutor(input: ExecutorCallInput): Promise<AiCallResult<ExecutorOutput>>;
 }
 
-function usageFromResponse(usage: {
-  input_tokens: number;
-  output_tokens: number;
-  input_tokens_details?: { cached_tokens?: number };
-}): UsageTokens {
+function usageFromResponse(
+  usage:
+    | {
+        input_tokens: number;
+        output_tokens: number;
+        input_tokens_details?: { cached_tokens?: number };
+      }
+    | undefined
+): UsageTokens {
+  // The SDK types `usage` as optional. Guard explicitly rather than a
+  // non-null assertion: the Budget Guard's spend accounting depends on
+  // this, and a call that billed real tokens but silently produced no
+  // usage record would let the guard under-count spend and allow further
+  // calls it should have blocked.
+  if (!usage) {
+    throw new Error(
+      "OpenAI response did not include usage data — refusing to proceed without recording actual cost."
+    );
+  }
   return {
     inputTokens: usage.input_tokens,
     cachedInputTokens: usage.input_tokens_details?.cached_tokens ?? 0,
@@ -53,9 +68,13 @@ export class OpenAiClient implements AiClient {
 
   async runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>> {
     const model = env.plannerModel();
+    const reasoningEffort = env.plannerReasoningEffort();
     const response = await this.client.responses.parse({
       model,
-      reasoning: { effort: "medium" },
+      // Only gpt-5/o-series reasoning models accept this param — omit it
+      // entirely unless explicitly configured, so the default placeholder
+      // model (and any non-reasoning override) doesn't hard-fail every call.
+      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort as ReasoningEffort } } : {}),
       input: [
         { role: "system", content: input.systemPrompt },
         { role: "user", content: input.userPrompt },
@@ -70,7 +89,7 @@ export class OpenAiClient implements AiClient {
 
     return {
       output: parsed,
-      usage: usageFromResponse(response.usage!),
+      usage: usageFromResponse(response.usage),
       model,
     };
   }
@@ -93,7 +112,7 @@ export class OpenAiClient implements AiClient {
 
     return {
       output: parsed,
-      usage: usageFromResponse(response.usage!),
+      usage: usageFromResponse(response.usage),
       model,
     };
   }

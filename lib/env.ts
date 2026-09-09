@@ -23,5 +23,12 @@ export const env = {
   // be overridden via env once the exact target ids are confirmed.
   plannerModel: () => process.env.OPENAI_PLANNER_MODEL || "gpt-4.1",
   executorModel: () => process.env.OPENAI_EXECUTOR_MODEL || "gpt-4.1-mini",
+  // The Responses API `reasoning` param is only accepted by gpt-5/o-series
+  // reasoning models — sending it to a non-reasoning model (like the
+  // gpt-4.1 placeholder default above) is a hard API error. Unset by
+  // default so the placeholder model works out of the box; set this once
+  // OPENAI_PLANNER_MODEL is a confirmed reasoning-capable model (e.g. the
+  // spec's "GPT-5.6 Sol") and medium reasoning effort is desired.
+  plannerReasoningEffort: () => process.env.OPENAI_PLANNER_REASONING_EFFORT || null,
   ownerEmail: () => process.env.OWNER_EMAIL || null,
 };

@@ -126,4 +126,38 @@ describe("Acceptance D — Revision Workflow", () => {
     expect(outcome.status).toBe("failed");
     expect(aiClient.executorCalls).toHaveLength(0);
   });
+
+  it("recovers a stale running run left by a crashed marketing cycle instead of reporting a false concurrency conflict", async () => {
+    const fake = createFakeDb();
+    seedDefaultSettings(fake);
+    seedPendingDraft(fake);
+
+    const elevenMinutesAgo = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    fake.seed("agent_runs", [
+      {
+        id: "run-stale",
+        brand: "solardesk",
+        kind: "marketing_cycle",
+        trigger: "manual",
+        status: "running",
+        decision: null,
+        summary: null,
+        error_code: null,
+        error_message: null,
+        started_at: elevenMinutesAgo,
+        completed_at: null,
+        created_at: elevenMinutesAgo,
+      },
+    ]);
+
+    const db = asSupabaseClient<SupabaseClient<Database>>(fake);
+    const aiClient = new ScriptedAiClient([], [carouselExecutorOutput()]);
+
+    const outcome = await requestRevision({ db, aiClient, draftId: "draft-1", category: "weak_hook", note: null });
+
+    expect(outcome.status).toBe("revised");
+    const staleRun = fake.getAll("agent_runs").find((r) => r.id === "run-stale");
+    expect(staleRun?.status).toBe("failed");
+    expect(staleRun?.error_code).toBe("stale_run_timeout");
+  });
 });

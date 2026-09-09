@@ -12,27 +12,7 @@ import { callExecutor, estimateExecutorInputTokens } from "@/lib/agent/executor"
 import { validateDraft } from "@/lib/agent/draftValidator";
 import type { ContentBrief } from "@/lib/agent/schemas";
 import { env } from "@/lib/env";
-
-const STALE_RUN_TIMEOUT_MS = 10 * 60 * 1000;
-
-function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
-}
-
-async function recoverStaleRuns(db: SupabaseClient<Database>, brand: string) {
-  const cutoff = new Date(Date.now() - STALE_RUN_TIMEOUT_MS).toISOString();
-  await db
-    .from("agent_runs")
-    .update({
-      status: "failed",
-      error_code: "stale_run_timeout",
-      error_message: "Run did not complete within the expected window and was recovered.",
-      completed_at: new Date().toISOString(),
-    })
-    .eq("brand", brand)
-    .eq("status", "running")
-    .lt("started_at", cutoff);
-}
+import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
 
 async function acquireRunLock(
   db: SupabaseClient<Database>,
