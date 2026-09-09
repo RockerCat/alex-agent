@@ -1,7 +1,7 @@
 # SolarDesk — Ficha de marca
 
 **Estado:** Ficha aprobada por Alex; datos comerciales complementados con su captura. No constituye aprobación de campañas ni publicaciones.  
-**Actualizado:** 2026-09-08  
+**Actualizado:** 2026-09-09  
 **Responsable:** Alex Sosa  
 **Agente:** AlexAgent, sujeto a `AGENT.md`.
 
@@ -46,10 +46,10 @@ Documentadas en el repositorio y/o la web pública; esta ficha no sustituye una 
 | Ubicación | Mapa del proyecto y datos internos de irradiación por localidad colombiana; no una API de irradiación en tiempo real. |
 | Propuesta interactiva | Enlace para compartir y aprobación en línea, según la web. No atribuir a esa aprobación efectos contractuales no verificados. |
 | PDF e identidad | Propuestas con logo, colores e información de la empresa. |
-| Compartir | Enlaces por WhatsApp y envío por correo; compartir por WhatsApp no significa disponer de automatización o integración con su API. |
+| Compartir | Envío directo de la propuesta por correo desde la plataforma: disponible. Enlace interactivo de la propuesta: disponible; el usuario puede copiarlo y compartirlo manualmente por WhatsApp o cualquier otro canal externo. Propuesta en PDF: disponible para obtener y compartir. Ninguna de estas opciones equivale a envío o integración directa con la API de WhatsApp desde SolarDesk; esa capacidad no existe hoy. |
 | PRO y suscripciones | Alex confirma que ya se puede contratar y que pagos y suscripciones se probaron satisfactoriamente con una cuenta personal de prueba. No equivale a validación comercial con clientes reales. |
 
-No anunciar como disponibles sin nueva verificación: simulación de financiación con terceros, CRM avanzado, seguimiento automático por WhatsApp, aplicaciones móviles, API externa de irradiación en vivo o múltiples plantillas de PDF.
+No anunciar como disponibles sin nueva verificación: simulación de financiación con terceros, CRM avanzado, envío o integración directa de WhatsApp para propuestas, seguimiento automático por WhatsApp, aplicaciones móviles, API externa de irradiación en vivo o múltiples plantillas de PDF.
 
 ## Oferta comercial
 
@@ -158,5 +158,6 @@ CTA propuestos por etapa: **Crea tu primera cotización**, **Comparte tu propues
 - Captura de la página de planes aportada por Alex: PRO a $49.900 COP/mes por tiempo limitado, precio regular mostrado de $69.900 y beneficios enumerados. La captura no confirma condiciones de renovación, impuestos ni fecha final de la promoción.
 - Confirmación posterior de Alex: la propuesta gratuita mensual se mantiene indefinidamente por ahora. Esta confirmación corresponde a la oferta gratuita, no a la vigencia de la promoción PRO.
 - Enlaces oficiales de Facebook e Instagram aportados por Alex en esta conversación. Su contenido y rendimiento todavía no fueron auditados.
+- Confirmación de Alex, 2026-09-09, verificada manualmente en el producto real durante QA de AlexAgent: la propuesta se puede enviar directamente por correo desde la plataforma, el enlace interactivo se puede copiar y compartir manualmente por WhatsApp u otro canal externo, y la propuesta también se puede obtener/compartir en PDF. SolarDesk no ofrece hoy envío ni integración directa con WhatsApp.
 
 La confirmación actual de Alex sobre PRO reemplaza, para esta ficha, la nota histórica de navegación de suscripciones oculta. No se modificó el repositorio de SolarDesk. Ante otras discrepancias, registrar la incertidumbre y verificar antes de publicar. Revisar esta ficha cuando cambien oferta, capacidades o evidencia de mercado.
