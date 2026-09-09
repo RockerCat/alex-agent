@@ -121,9 +121,13 @@ describe("planValidator", () => {
     });
 
     const result = validatePlannerOutput(output, context, "2026-09-08");
-    expect(result.valid).toBe(true);
-    expect(result.corrected!.content).toHaveLength(0);
+    // The only proposed brief was dropped as a duplicate, leaving
+    // CONTINUE_EXISTING_PLAN with zero actionable content — invalid
+    // (not merely "valid but empty"): the Planner must instead return
+    // NO_ACTION when nothing differentiated is left to do.
+    expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes("duplicates"))).toBe(true);
+    expect(result.errors.some((e) => e.includes("at least one actionable content brief"))).toBe(true);
   });
 
   it("drops a brief that duplicates another brief within the same Planner response", () => {
@@ -153,6 +157,71 @@ describe("planValidator", () => {
     expect(result.valid).toBe(true);
     expect(result.corrected!.content).toHaveLength(1);
     expect(result.errors.some((e) => e.includes("same response"))).toBe(true);
+  });
+
+  it("rejects an empty CONTINUE_EXISTING_PLAN — an active plan alone is not a reason to continue", () => {
+    const context = baseContext({
+      activePlan: {
+        id: "plan-1",
+        brand: "solardesk",
+        period_start: "2026-09-08",
+        period_end: "2026-09-15",
+        primary_objective: "ACTIVATION",
+        primary_objective_reason: "r",
+        primary_objective_success_signal: "s",
+        supporting_objectives: [],
+        strategy_summary: "s",
+        strategy_audience: "a",
+        strategy_approach: "a",
+        rationale: "r",
+        status: "active",
+        created_by_run: null,
+        created_at: "2026-09-08T00:00:00Z",
+      },
+    });
+    const output = createPlanOutput({ decision: "CONTINUE_EXISTING_PLAN", content: [] });
+    const result = validatePlannerOutput(output, context, "2026-09-08");
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("at least one actionable content brief"))).toBe(true);
+  });
+
+  it("accepts CONTINUE_EXISTING_PLAN when at least one actionable brief survives validation", () => {
+    const context = baseContext({
+      activePlan: {
+        id: "plan-1",
+        brand: "solardesk",
+        period_start: "2026-09-08",
+        period_end: "2026-09-15",
+        primary_objective: "ACTIVATION",
+        primary_objective_reason: "r",
+        primary_objective_success_signal: "s",
+        supporting_objectives: [],
+        strategy_summary: "s",
+        strategy_audience: "a",
+        strategy_approach: "a",
+        rationale: "r",
+        status: "active",
+        created_by_run: null,
+        created_at: "2026-09-08T00:00:00Z",
+      },
+    });
+    const output = createPlanOutput({
+      decision: "CONTINUE_EXISTING_PLAN",
+      content: [
+        {
+          purpose: "education",
+          channel: "instagram",
+          format: "carousel",
+          topic: "Cómo explicar tus supuestos de estimación",
+          audience: "aud",
+          cta: "cta",
+          targetDate: "2026-09-11",
+        },
+      ],
+    });
+    const result = validatePlannerOutput(output, context, "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(1);
   });
 
   it("rejects CREATE_PLAN when an active plan already exists", () => {

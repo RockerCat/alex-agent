@@ -107,6 +107,25 @@ export function validatePlannerOutput(
       );
       content = content.slice(0, MAX_CONTENT_PER_CYCLE);
     }
+
+    // CONTINUE_EXISTING_PLAN means "the active plan has justified work to
+    // execute now" — it is not a synonym for "an active plan exists".
+    // If every proposed brief was dropped (empty from the start, or
+    // emptied by date/duplicate filtering above), there is no actionable
+    // work left, so this decision is invalid: the correct decision for
+    // "nothing differentiated is needed right now" is NO_ACTION. This
+    // must be a hard failure (not a dropped-but-still-valid note) so the
+    // existing bounded Planner retry path forces a corrected decision
+    // rather than silently persisting an empty "continuation".
+    if (output.decision === "CONTINUE_EXISTING_PLAN" && content.length === 0) {
+      return {
+        valid: false,
+        errors: [
+          ...contentErrors,
+          "CONTINUE_EXISTING_PLAN requires at least one actionable content brief; none remained after validation. If no differentiated work is currently justified, use NO_ACTION instead — it is a valid, successful outcome, not a failure.",
+        ],
+      };
+    }
   } else {
     content = [];
   }

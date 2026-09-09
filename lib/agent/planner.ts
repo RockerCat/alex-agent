@@ -20,6 +20,9 @@ export function buildPlannerPrompt(context: AgentContext, todayIso: string): { s
     "If a business priority or material product fact required for a safe decision is unknown, use decision NEEDS_HUMAN_INPUT and populate humanQuestion instead of guessing.",
     "Never invent customers, testimonials, statistics, awards, partnerships, or claim unavailable capabilities as available.",
     "Do not repeat a topic that is already covered by an existing active-plan draft unless materially different.",
+    "CONTINUE_EXISTING_PLAN and NO_ACTION are not interchangeable. An active plan existing is not, by itself, a reason to choose CONTINUE_EXISTING_PLAN.",
+    "Choose CONTINUE_EXISTING_PLAN only when the active plan has justified, differentiated work to execute right now — in that case `content` must include at least one concrete, non-duplicate brief. An empty CONTINUE_EXISTING_PLAN is invalid and will be rejected.",
+    "Choose NO_ACTION when you evaluate the current state and conclude nothing further should be created right now — for example, existing approved/pending drafts already cover the plan's priorities and more content would add volume without a differentiated need. NO_ACTION with zero content is a fully successful, intended outcome, not a failure or a shortcut.",
   ].join("\n");
 
   const planSummary = context.activePlan
