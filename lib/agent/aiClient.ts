@@ -71,9 +71,11 @@ export class OpenAiClient implements AiClient {
     const reasoningEffort = env.plannerReasoningEffort();
     const response = await this.client.responses.parse({
       model,
-      // Only gpt-5/o-series reasoning models accept this param — omit it
-      // entirely unless explicitly configured, so the default placeholder
-      // model (and any non-reasoning override) doesn't hard-fail every call.
+      // Only gpt-5/o-series reasoning models accept this param. It's
+      // included by default (env.plannerReasoningEffort() defaults to
+      // "medium" for the confirmed gpt-5.6-sol default) but stays omittable
+      // — if OPENAI_PLANNER_MODEL is ever pointed at a non-reasoning model,
+      // sending this would hard-fail every call.
       ...(reasoningEffort ? { reasoning: { effort: reasoningEffort as ReasoningEffort } } : {}),
       input: [
         { role: "system", content: input.systemPrompt },

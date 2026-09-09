@@ -26,9 +26,18 @@ describe("pricing — unknown model fallback", () => {
 
   it("the fallback price is at or above every known configured model, so switching models never under-reserves budget for an unmapped id", () => {
     const fallback = getModelPricing("some-future-unmapped-model");
-    for (const known of ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini"]) {
+    for (const known of [
+      "gpt-5.6-sol",
+      "gpt-5.6-luna",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-mini",
+    ]) {
       const p = getModelPricing(known);
       expect(fallback.inputPerMillion).toBeGreaterThanOrEqual(p.inputPerMillion);
+      expect(fallback.cachedInputPerMillion).toBeGreaterThanOrEqual(p.cachedInputPerMillion);
       expect(fallback.outputPerMillion).toBeGreaterThanOrEqual(p.outputPerMillion);
     }
   });
@@ -36,5 +45,46 @@ describe("pricing — unknown model fallback", () => {
   it("preCallEstimateUsd for an unmapped model still produces a positive pre-call reservation", () => {
     const estimate = preCallEstimateUsd("unmapped-model-xyz", 1000, 1000);
     expect(estimate).toBeGreaterThan(0);
+  });
+});
+
+describe("pricing — confirmed production models (spec section 5)", () => {
+  it("registers exact gpt-5.6-sol (Planner) pricing", () => {
+    const pricing = getModelPricing("gpt-5.6-sol");
+    expect(pricing).toEqual({
+      inputPerMillion: 4.0,
+      cachedInputPerMillion: 0.4,
+      outputPerMillion: 20.0,
+    });
+  });
+
+  it("registers exact gpt-5.6-luna (Executor) pricing", () => {
+    const pricing = getModelPricing("gpt-5.6-luna");
+    expect(pricing).toEqual({
+      inputPerMillion: 0.2,
+      cachedInputPerMillion: 0.02,
+      outputPerMillion: 1.2,
+    });
+  });
+
+  it("computes gpt-5.6-sol cost correctly for a representative Planner call", () => {
+    // 10,000 input tokens (2,000 cached) + 1,500 output tokens.
+    const cost = estimateCostUsd("gpt-5.6-sol", {
+      inputTokens: 10_000,
+      cachedInputTokens: 2_000,
+      outputTokens: 1_500,
+    });
+    const expected = (8_000 / 1_000_000) * 4.0 + (2_000 / 1_000_000) * 0.4 + (1_500 / 1_000_000) * 20.0;
+    expect(cost).toBeCloseTo(expected, 6);
+  });
+
+  it("computes gpt-5.6-luna cost correctly for a representative Executor call", () => {
+    const cost = estimateCostUsd("gpt-5.6-luna", {
+      inputTokens: 5_000,
+      cachedInputTokens: 0,
+      outputTokens: 1_200,
+    });
+    const expected = (5_000 / 1_000_000) * 0.2 + (1_200 / 1_000_000) * 1.2;
+    expect(cost).toBeCloseTo(expected, 6);
   });
 });
