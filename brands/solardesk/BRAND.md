@@ -40,22 +40,24 @@ Documentadas en el repositorio y/o la web pública; esta ficha no sustituye una 
 
 | Capacidad | Base y límite de comunicación |
 | --- | --- |
-| Clientes y cotizaciones | Crear y gestionar clientes; crear, editar, duplicar y seguir propuestas. |
+| Clientes y cotizaciones | Crear y gestionar clientes; crear, editar, duplicar y seguir propuestas. El cliente debe existir antes de crear una propuesta para él: es un requisito real del producto, no una recomendación de estilo. |
 | Dimensionamiento solar | Estimaciones de sistema, paneles, área, producción y costos según entradas y parámetros. No presentarlo como certificación ni ingeniería definitiva. |
 | Ahorro y retorno | Proyecciones dependientes de supuestos; no garantías financieras o de generación. |
 | Ubicación | Mapa del proyecto y datos internos de irradiación por localidad colombiana; no una API de irradiación en tiempo real. |
 | Propuesta interactiva | Enlace para compartir y aprobación en línea, según la web. No atribuir a esa aprobación efectos contractuales no verificados. |
-| PDF e identidad | Propuestas con logo, colores e información de la empresa. |
+| PDF e identidad | Propuestas con logo, colores e información de la empresa. La personalización de marca puede aplicarse en cualquier momento antes de preparar la cotización/propuesta; no tiene una posición obligatoria fija dentro del flujo de trabajo. |
 | Compartir | Envío directo de la propuesta por correo desde la plataforma: disponible. Enlace interactivo de la propuesta: disponible; el usuario puede copiarlo y compartirlo manualmente por WhatsApp o cualquier otro canal externo. Propuesta en PDF: disponible para obtener y compartir. Ninguna de estas opciones equivale a envío o integración directa con la API de WhatsApp desde SolarDesk; esa capacidad no existe hoy. |
 | PRO y suscripciones | Alex confirma que ya se puede contratar y que pagos y suscripciones se probaron satisfactoriamente con una cuenta personal de prueba. No equivale a validación comercial con clientes reales. |
 
 No anunciar como disponibles sin nueva verificación: simulación de financiación con terceros, CRM avanzado, envío o integración directa de WhatsApp para propuestas, seguimiento automático por WhatsApp, aplicaciones móviles, API externa de irradiación en vivo o múltiples plantillas de PDF.
 
+**Flujo de trabajo:** el único orden verificado como obligatorio es que el cliente exista antes de crear una propuesta para él (ver fila "Clientes y cotizaciones"). Ningún otro paso tiene una secuencia obligatoria confirmada. El contenido puede describir un recorrido recomendado o de ejemplo —por ejemplo: crear cliente/proyecto → personalizar marca → preparar cotización → revisar estimaciones/supuestos → compartir propuesta— siempre distinguiéndolo explícitamente de un requisito del producto. No presentar ese ni otro orden como obligatorio salvo que se verifique por separado con Alex.
+
 ## Oferta comercial
 
 - Modelo: SaaS con acceso gratuito y suscripción PRO.
-- Oferta gratuita: una propuesta profesional gratis cada mes, sin tarjeta de crédito según la web. Alex confirma que se mantiene indefinidamente por ahora, sin fecha de finalización establecida. No presentarla como una garantía irrevocable de gratuidad de por vida.
-- PRO: la documentación describe cotizaciones ilimitadas; contratación disponible según confirmación actual de Alex.
+- Oferta gratuita: una propuesta profesional gratis cada mes; registrarse y usar el plan gratuito no requiere tarjeta de crédito. Alex verificó directamente ambos puntos en el producto real como capacidades actualmente disponibles (no funcionalidades planificadas). Alex confirma que la oferta gratuita se mantiene indefinidamente por ahora, sin fecha de finalización establecida. No presentarla como una garantía irrevocable de gratuidad de por vida.
+- PRO: el producto comunica cotizaciones adicionales/ilimitadas frente al límite mensual del plan gratuito; contratación disponible según confirmación actual de Alex. No agregar condiciones de precio, facturación, renovación o prueba de PRO más allá de lo ya documentado en esta sección.
 - Precio PRO mostrado en la captura aportada por Alex: **$49.900 COP/mes**, promocional por tiempo limitado, frente a **$69.900 COP/mes** de precio regular mostrado tachado.
 - La captura enumera propuestas solares ilimitadas, propuestas PDF profesionales, historial completo de pagos y acceso a futuras mejoras incluidas en el plan. No prometer mejoras específicas ni fechas de entrega a partir de esa última frase.
 - Fecha de fin de la promoción, impuestos, aplicación del descuento a renovaciones y condiciones comerciales detalladas: pendientes de confirmación. No inventar fechas, cuentas regresivas ni permanencia del precio promocional. No reutilizar precios históricos del repositorio.
@@ -159,5 +161,6 @@ CTA propuestos por etapa: **Crea tu primera cotización**, **Comparte tu propues
 - Confirmación posterior de Alex: la propuesta gratuita mensual se mantiene indefinidamente por ahora. Esta confirmación corresponde a la oferta gratuita, no a la vigencia de la promoción PRO.
 - Enlaces oficiales de Facebook e Instagram aportados por Alex en esta conversación. Su contenido y rendimiento todavía no fueron auditados.
 - Confirmación de Alex, 2026-09-09, verificada manualmente en el producto real durante QA de AlexAgent: la propuesta se puede enviar directamente por correo desde la plataforma, el enlace interactivo se puede copiar y compartir manualmente por WhatsApp u otro canal externo, y la propuesta también se puede obtener/compartir en PDF. SolarDesk no ofrece hoy envío ni integración directa con WhatsApp.
+- Confirmación adicional de Alex, 2026-09-09, verificada manualmente en el producto real durante QA de AlexAgent: el plan gratuito incluye una propuesta profesional por mes y no requiere tarjeta de crédito para registrarse ni usarlo, ambas como capacidades actualmente disponibles. Alex también confirmó que el cliente debe existir antes de crear una propuesta para él, y que la personalización de marca puede aplicarse en cualquier momento antes de preparar la cotización, sin una posición obligatoria fija en el flujo de trabajo.
 
 La confirmación actual de Alex sobre PRO reemplaza, para esta ficha, la nota histórica de navegación de suscripciones oculta. No se modificó el repositorio de SolarDesk. Ante otras discrepancias, registrar la incertidumbre y verificar antes de publicar. Revisar esta ficha cuando cambien oferta, capacidades o evidencia de mercado.
