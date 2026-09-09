@@ -22,11 +22,14 @@ export const env = {
   // keep the two in sync if either model id changes.
   plannerModel: () => process.env.OPENAI_PLANNER_MODEL || "gpt-5.6-sol",
   executorModel: () => process.env.OPENAI_EXECUTOR_MODEL || "gpt-5.6-luna",
-  // The Responses API `reasoning` param is only accepted by gpt-5/o-series
-  // reasoning models. gpt-5.6-sol supports it, so "medium" (spec section 5)
-  // is the default; only override/unset this if OPENAI_PLANNER_MODEL is
-  // pointed at a non-reasoning model, which would otherwise hard-fail every
-  // Planner call.
-  plannerReasoningEffort: () => process.env.OPENAI_PLANNER_REASONING_EFFORT || "medium",
+  // Live evidence: gpt-5.6-sol rejects the Responses API `reasoning`
+  // param outright — "400 Unsupported parameter: 'reasoning.effort' is
+  // not supported with this model." Whether a given model accepts this
+  // param is not something to infer from its name or the spec's stated
+  // intent; it must be verified against the live API. So this is opt-in
+  // only: absent or empty, no reasoning param is sent to anyone. Set it
+  // explicitly only once a specific configured model is confirmed to
+  // accept it.
+  plannerReasoningEffort: () => process.env.OPENAI_PLANNER_REASONING_EFFORT || null,
   ownerEmail: () => process.env.OWNER_EMAIL || null,
 };

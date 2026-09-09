@@ -71,11 +71,12 @@ export class OpenAiClient implements AiClient {
     const reasoningEffort = env.plannerReasoningEffort();
     const response = await this.client.responses.parse({
       model,
-      // Only gpt-5/o-series reasoning models accept this param. It's
-      // included by default (env.plannerReasoningEffort() defaults to
-      // "medium" for the confirmed gpt-5.6-sol default) but stays omittable
-      // — if OPENAI_PLANNER_MODEL is ever pointed at a non-reasoning model,
-      // sending this would hard-fail every call.
+      // Opt-in only (env.plannerReasoningEffort() is null unless
+      // OPENAI_PLANNER_REASONING_EFFORT is explicitly set): live evidence
+      // showed the confirmed gpt-5.6-sol default rejects this param
+      // outright ("400 Unsupported parameter: 'reasoning.effort' is not
+      // supported with this model."). Only set the env var once a
+      // specific configured model is verified to accept it.
       ...(reasoningEffort ? { reasoning: { effort: reasoningEffort as ReasoningEffort } } : {}),
       input: [
         { role: "system", content: input.systemPrompt },
