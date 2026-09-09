@@ -22,6 +22,25 @@ export interface AiCallResult<T> {
 }
 
 /**
+ * Executor calls need a third outcome beyond "valid output" / "thrown
+ * error": the Responses API can report a call as `status: "incomplete"`
+ * (see `incomplete_details.reason`, e.g. "max_output_tokens") while
+ * still returning syntactically valid, schema-compliant JSON — Structured
+ * Outputs' constrained decoding can force-close a string exactly at its
+ * JSON Schema `maxLength` mid-sentence rather than failing to parse.
+ * `output` is therefore optional here and must not be read when
+ * `incomplete` is set; callers still record `usage` (the call was real
+ * and billable) and retry within the existing bounded Executor policy
+ * instead of persisting anything.
+ */
+export interface ExecutorCallResult {
+  output?: ExecutorOutput;
+  usage: UsageTokens;
+  model: string;
+  incomplete?: { reason: string };
+}
+
+/**
  * Thin seam between the agent runtime and the model provider. Production
  * code uses OpenAiClient; tests inject a scripted fake so Planner/Executor
  * business logic (preflight, validation, budget, product truth, revision
@@ -30,8 +49,17 @@ export interface AiCallResult<T> {
  */
 export interface AiClient {
   runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>>;
-  runExecutor(input: ExecutorCallInput): Promise<AiCallResult<ExecutorOutput>>;
+  runExecutor(input: ExecutorCallInput): Promise<ExecutorCallResult>;
 }
+
+// Generous headroom above what EXECUTOR_TEXT_LIMITS (lib/agent/schemas.ts)
+// can ever require for a single piece of content, so this cap bounds
+// worst-case per-call cost without becoming a new truncation source
+// itself. Not wired into the Budget Guard's own pre-call estimate
+// (lib/agent/runtime.ts / revision.ts still use a smaller, separate
+// approxMaxOutputTokens for that pessimistic reservation) — this is
+// strictly an upper bound sent to the API.
+const EXECUTOR_MAX_OUTPUT_TOKENS = 4000;
 
 function usageFromResponse(
   usage:
@@ -97,16 +125,32 @@ export class OpenAiClient implements AiClient {
     };
   }
 
-  async runExecutor(input: ExecutorCallInput): Promise<AiCallResult<ExecutorOutput>> {
+  async runExecutor(input: ExecutorCallInput): Promise<ExecutorCallResult> {
     const model = env.executorModel();
     const response = await this.client.responses.parse({
       model,
+      max_output_tokens: EXECUTOR_MAX_OUTPUT_TOKENS,
       input: [
         { role: "system", content: input.systemPrompt },
         { role: "user", content: input.userPrompt },
       ],
       text: { format: zodTextFormat(executorOutputSchema, "executor_output") },
     });
+
+    const usage = usageFromResponse(response.usage);
+
+    // Trust the API's own completeness signal over the parse succeeding.
+    // Constrained decoding can force-close a truncated string into
+    // syntactically valid JSON, so `output_parsed` may look fine even
+    // when `status`/`incomplete_details` says otherwise — this is the
+    // live incident this guards against.
+    if (response.status === "incomplete") {
+      return {
+        usage,
+        model,
+        incomplete: { reason: response.incomplete_details?.reason ?? "unknown" },
+      };
+    }
 
     const parsed = response.output_parsed;
     if (!parsed) {
@@ -115,7 +159,7 @@ export class OpenAiClient implements AiClient {
 
     return {
       output: parsed,
-      usage: usageFromResponse(response.usage),
+      usage,
       model,
     };
   }

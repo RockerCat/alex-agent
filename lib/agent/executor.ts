@@ -1,8 +1,7 @@
 import type { AgentContext } from "@/lib/agent/contextLoader";
-import type { AiClient } from "@/lib/agent/aiClient";
-import type { ContentBrief, ExecutorOutput } from "@/lib/agent/schemas";
+import type { AiClient, ExecutorCallResult } from "@/lib/agent/aiClient";
+import type { ContentBrief } from "@/lib/agent/schemas";
 import type { FeedbackCategory } from "@/lib/agent/constants";
-import type { UsageTokens } from "@/lib/agent/pricing";
 
 export interface RevisionInstruction {
   category: FeedbackCategory;
@@ -61,19 +60,13 @@ export function buildExecutorPrompt(
   return { system, user: parts.join("\n") };
 }
 
-export interface ExecutorCallOutcome {
-  output: ExecutorOutput;
-  usage: UsageTokens;
-  model: string;
-}
-
 export async function callExecutor(
   aiClient: AiClient,
   context: AgentContext,
   brief: ContentBrief,
   revision?: RevisionInstruction,
   factCorrection?: string
-): Promise<ExecutorCallOutcome> {
+): Promise<ExecutorCallResult> {
   const { system, user } = buildExecutorPrompt(context, brief, revision, factCorrection);
   return aiClient.runExecutor({ systemPrompt: system, userPrompt: user });
 }

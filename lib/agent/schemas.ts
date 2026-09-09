@@ -54,20 +54,45 @@ export type PlannerOutput = z.infer<typeof plannerOutputSchema>;
 // Executor structured output (ALEXAGENT_V0.1_SPEC.md section 12)
 // ---------------------------------------------------------------------
 
+// Named so lib/agent/draftValidator.ts can check whether a generated
+// string landed at EXACTLY its schema ceiling — a strong, mechanical
+// signal that OpenAI's Structured Outputs constrained decoding (or the
+// model itself, trying to respect the stated limit) force-closed the
+// string mid-sentence rather than a coincidentally-short natural length.
+//
+// The original limits here (title 200, hook 300, slideText 500, cta
+// 200, visualDirection 600) are the confirmed root cause of a live
+// incident: a carousel slide and visualDirection were cut off mid-
+// sentence in an otherwise syntactically valid, schema-compliant
+// response — the Responses API's own maxLength enforcement clipped the
+// string exactly at the JSON Schema `maxLength` derived from these
+// `.max()` calls. Widened with real headroom so ordinary marketing
+// copy (including a trailing caveat sentence) fits comfortably under
+// the ceiling; `caption`'s existing 2200 was never implicated and is
+// unchanged.
+export const EXECUTOR_TEXT_LIMITS = {
+  title: 260,
+  hook: 400,
+  slideText: 700,
+  caption: 2200,
+  cta: 260,
+  visualDirection: 900,
+} as const;
+
 export const executorOutputSchema = z.object({
-  title: z.string().min(1).max(200),
-  hook: z.string().min(1).max(300),
+  title: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.title),
+  hook: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.hook),
   slides: z
     .array(
       z.object({
         slide: z.number().int().min(1),
-        text: z.string().min(1).max(500),
+        text: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.slideText),
       })
     )
     .max(10),
-  caption: z.string().min(1).max(2200),
-  cta: z.string().min(1).max(200),
-  visualDirection: z.string().min(1).max(600),
+  caption: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.caption),
+  cta: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.cta),
+  visualDirection: z.string().min(1).max(EXECUTOR_TEXT_LIMITS.visualDirection),
   hashtags: z.array(z.string().min(1).max(50)).max(15),
   // Set by the executor when it could not safely complete the brief
   // without relying on an unverifiable claim (Product Truth — spec section 19).

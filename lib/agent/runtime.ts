@@ -474,6 +474,15 @@ async function executeContentBrief(params: {
       usage: executorResult.usage,
     });
 
+    if (executorResult.incomplete) {
+      // The Responses API itself flagged this call as incomplete
+      // (status: "incomplete") — usage is still recorded above since the
+      // call was real and billable, but nothing about this result may be
+      // validated or persisted. Retry within the existing bounded policy.
+      correctiveNote = `Your previous response was cut off before completing (reason: ${executorResult.incomplete.reason}). Write shorter, self-contained sentences that comfortably fit within each field's length limit — never let a sentence run past the limit and get cut off mid-thought.`;
+      continue;
+    }
+
     const validation = validateDraft(executorResult.output, brief);
 
     if (validation.output?.unresolvedFactualGap) {
