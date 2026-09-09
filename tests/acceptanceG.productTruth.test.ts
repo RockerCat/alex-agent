@@ -80,9 +80,17 @@ describe("Acceptance G — Product Truth", () => {
     const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
 
     expect(run.status).toBe("completed");
-    expect(fake.getAll("content_drafts")).toHaveLength(0);
+    // No fabricated content ships — but the blocked brief itself is
+    // persisted (status "draft", not "pending_approval") so answering
+    // the question can resume it later instead of losing it silently.
+    const drafts = fake.getAll("content_drafts");
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].status).toBe("draft");
+
     const questions = fake.getAll("agent_questions");
     expect(questions).toHaveLength(1);
     expect(questions[0].question).toMatch(/promotional PRO price/i);
+    expect(questions[0].context_draft_id).toBe(drafts[0].id);
+    expect(drafts[0].blocked_on_question_id).toBe(questions[0].id);
   });
 });

@@ -13,8 +13,15 @@ export interface AnswerQuestionOutcome {
  * Alex answers a business/product question through the /questions UI
  * (spec section 18). The answer becomes available to the next Planner
  * run via the Context Loader; if the question was blocking a specific
- * draft's revision, that revision is resumed automatically so Alex never
- * has to start a chat to unblock it.
+ * draft, that draft is resumed automatically so Alex never has to start
+ * a chat to unblock it. This covers two cases that both leave a
+ * content_drafts row with blocked_on_question_id set: a pending draft
+ * blocked on a revision (factually_incorrect feedback), and a brief the
+ * Planner originally called for that the Executor could not complete
+ * without this fact (see the unresolvedFactualGap branch in
+ * lib/agent/runtime.ts) — in the latter case the draft starts in status
+ * "draft" with no generated content yet, and this resumes it into
+ * existence for the first time.
  */
 export async function answerQuestion(params: {
   db: SupabaseClient<Database>;

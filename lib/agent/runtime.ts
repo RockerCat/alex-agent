@@ -351,18 +351,70 @@ async function executeContentBrief(params: {
     const validation = validateDraft(executorResult.output, brief);
 
     if (validation.output?.unresolvedFactualGap) {
-      await db.from("agent_questions").insert({
-        brand,
-        question: validation.output.unresolvedFactualGap.question,
-        reason: validation.output.unresolvedFactualGap.reason,
-        status: "open",
-        blocks_progress: false,
-        context_run_id: runId,
-        context_plan_id: planId,
-      });
+      // Persist the blocked brief itself (not just the question text) as
+      // a content_drafts row in status "draft" — the same mechanism
+      // already used for a revision blocked on a factual question (see
+      // lib/agent/revision.ts / lib/agent/questions.ts). Without this,
+      // the brief's channel/topic/audience/cta/targetDate only ever
+      // existed in memory for this one attempt: answering the resulting
+      // question had nothing to resume, so the brief was silently lost
+      // even though the Planner had originally called for it.
+      const { data: placeholderDraft, error: placeholderError } = await db
+        .from("content_drafts")
+        .insert({
+          plan_id: planId,
+          brand,
+          created_by_run: runId,
+          channel: brief.channel,
+          content_type: brief.format,
+          purpose: brief.purpose,
+          topic: brief.topic,
+          audience: brief.audience,
+          cta: brief.cta,
+          target_date: brief.targetDate,
+          status: "draft",
+          version: 0, // regenerateDraftContent bumps to 1 on the first successful resume, matching normal "v1 = initial content" numbering.
+        })
+        .select("*")
+        .single();
+
+      if (placeholderError || !placeholderDraft) {
+        return {
+          created: false,
+          note: `Skipped "${brief.topic}": executor flagged a factual gap, but the blocked brief could not be persisted (${placeholderError?.message ?? "unknown error"}). A human question was not created either.`,
+        };
+      }
+
+      const { data: question, error: questionError } = await db
+        .from("agent_questions")
+        .insert({
+          brand,
+          question: validation.output.unresolvedFactualGap.question,
+          reason: validation.output.unresolvedFactualGap.reason,
+          status: "open",
+          blocks_progress: false,
+          context_run_id: runId,
+          context_plan_id: planId,
+          context_draft_id: placeholderDraft.id,
+        })
+        .select("id")
+        .single();
+
+      if (questionError || !question) {
+        return {
+          created: false,
+          note: `Skipped "${brief.topic}": executor flagged a factual gap, but the question could not be persisted (${questionError?.message ?? "unknown error"}).`,
+        };
+      }
+
+      await db
+        .from("content_drafts")
+        .update({ blocked_on_question_id: question.id })
+        .eq("id", placeholderDraft.id);
+
       return {
         created: false,
-        note: `Skipped "${brief.topic}": executor flagged a factual gap and a human question was created.`,
+        note: `Skipped "${brief.topic}": executor flagged a factual gap and a human question was created. It will resume automatically once answered.`,
       };
     }
 
