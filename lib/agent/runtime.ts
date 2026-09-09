@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, AgentRunRow, RunTrigger, RunKind } from "@/lib/types/database";
+import type { Database, AgentRunRow, AgentQuestionRow, ContentDraftRow, RunTrigger, RunKind } from "@/lib/types/database";
 import type { AiClient } from "@/lib/agent/aiClient";
 import type { SupportedBrand } from "@/lib/agent/constants";
 import { MAX_CONTENT_PER_CYCLE, MAX_EXECUTOR_RETRIES, MAX_PLANNER_CALLS_PER_RUN } from "@/lib/agent/constants";
@@ -10,9 +10,108 @@ import { callPlanner, estimatePlannerInputTokens } from "@/lib/agent/planner";
 import { validatePlannerOutput } from "@/lib/agent/planValidator";
 import { callExecutor, estimateExecutorInputTokens } from "@/lib/agent/executor";
 import { validateDraft } from "@/lib/agent/draftValidator";
+import { resumeDraftCore } from "@/lib/agent/revision";
 import type { ContentBrief } from "@/lib/agent/schemas";
 import { env } from "@/lib/env";
 import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
+
+/**
+ * Finds a brief that was blocked on a factual question the Executor
+ * raised (persisted as a content_drafts row in status "draft" — see the
+ * unresolvedFactualGap branch of executeContentBrief below) whose
+ * question has since been answered, and where no successful version has
+ * been persisted yet (status is still "draft", not "pending_approval").
+ * Deterministic, no AI cost — mirrors the spirit of Preflight even
+ * though it lives here rather than in preflight.ts, since it needs a
+ * live DB lookup that preflight.ts's pure function intentionally avoids.
+ */
+async function findResumableDraft(
+  db: SupabaseClient<Database>,
+  brand: string
+): Promise<{ draft: ContentDraftRow; question: AgentQuestionRow } | null> {
+  const { data: candidates } = await db
+    .from("content_drafts")
+    .select("*")
+    .eq("brand", brand)
+    .eq("status", "draft")
+    .order("created_at", { ascending: true });
+
+  for (const draft of candidates ?? []) {
+    if (!draft.blocked_on_question_id) continue;
+    const { data: question } = await db
+      .from("agent_questions")
+      .select("*")
+      .eq("id", draft.blocked_on_question_id)
+      .single();
+    if (question && question.status === "answered") {
+      return { draft, question };
+    }
+  }
+  return null;
+}
+
+/**
+ * Resumes exactly one previously blocked brief using the structured
+ * fields already persisted on its placeholder draft — never the
+ * Planner, never a prose reconstruction of the brief. Attributed to the
+ * marketing cycle's own already-held run/lock (agentRunId), so this must
+ * never acquire a second lock: resumeDraftCore does not touch agent_runs
+ * at all, and any thrown error propagates to runMarketingCycle's own
+ * try/catch, which marks the run failed while leaving the draft
+ * untouched (still "draft", still blocked_on_question_id set) — safe to
+ * retry on the next wake.
+ */
+async function resumeBlockedDraft(params: {
+  db: SupabaseClient<Database>;
+  aiClient: AiClient;
+  budgetGuard: BudgetGuard;
+  runId: string;
+  resumable: { draft: ContentDraftRow; question: AgentQuestionRow };
+}): Promise<AgentRunRow> {
+  const { db, aiClient, budgetGuard, runId, resumable } = params;
+  const { draft, question } = resumable;
+
+  const outcome = await resumeDraftCore({
+    db,
+    aiClient,
+    budgetGuard,
+    agentRunId: runId,
+    draft,
+    factCorrection: `Alex answered the blocking question.\nQ: ${question.question}\nA: ${question.answer}\nUse this as authoritative fact.`,
+  });
+
+  if (outcome.budgetBlocked) {
+    return finishRun(db, runId, {
+      status: "skipped",
+      decision: "BUDGET_BLOCKED",
+      summary: outcome.message ?? "Budget blocked before resuming a previously blocked brief.",
+    });
+  }
+
+  if (outcome.status === "revised") {
+    return finishRun(db, runId, {
+      status: "completed",
+      decision: null,
+      summary: `Resumed a previously blocked brief ("${draft.topic}") now that its question is answered. Draft is pending approval.`,
+    });
+  }
+
+  if (outcome.status === "blocked_on_question") {
+    return finishRun(db, runId, {
+      status: "completed",
+      decision: null,
+      summary: `Resuming "${draft.topic}" surfaced another factual question; it remains blocked.`,
+    });
+  }
+
+  return finishRun(db, runId, {
+    status: "failed",
+    decision: null,
+    error_code: "resume_failed",
+    error_message: outcome.message ?? null,
+    summary: `Could not resume the previously blocked brief "${draft.topic}".`,
+  });
+}
 
 async function acquireRunLock(
   db: SupabaseClient<Database>,
@@ -113,18 +212,45 @@ export async function runMarketingCycle(params: {
       budget: budgetSnapshot,
     });
 
-    if (preflight.outcome !== "proceed_to_planner") {
+    // "disabled", "budget_blocked", and "blocked_by_question" (some
+    // *other* still-open blocking question) are hard stops that must not
+    // be overridden by resuming leftover blocked work.
+    if (
+      preflight.outcome === "disabled" ||
+      preflight.outcome === "budget_blocked" ||
+      preflight.outcome === "blocked_by_question"
+    ) {
       const decision =
         preflight.outcome === "budget_blocked"
           ? "BUDGET_BLOCKED"
           : preflight.outcome === "blocked_by_question"
             ? "NEEDS_HUMAN_INPUT"
-            : preflight.outcome === "wait_for_approval"
-              ? "WAIT_FOR_APPROVAL"
-              : null;
+            : null;
       const finished = await finishRun(db, run.id, {
         status: "skipped",
         decision,
+        summary: preflight.summary,
+      });
+      return { run: finished };
+    }
+
+    // Before honoring WAIT_FOR_APPROVAL or handing off to the Planner,
+    // check for a brief the Planner already called for that is sitting
+    // blocked on a question that has since been answered. That work
+    // takes priority over both — it must resume via the Executor only,
+    // never by rerunning the Planner (spec: answering a question makes
+    // the fact available to *subsequent* execution, it doesn't restart
+    // planning).
+    const resumable = await findResumableDraft(db, brand);
+    if (resumable) {
+      const finished = await resumeBlockedDraft({ db, aiClient, budgetGuard, runId: run.id, resumable });
+      return { run: finished };
+    }
+
+    if (preflight.outcome === "wait_for_approval") {
+      const finished = await finishRun(db, run.id, {
+        status: "skipped",
+        decision: "WAIT_FOR_APPROVAL",
         summary: preflight.summary,
       });
       return { run: finished };

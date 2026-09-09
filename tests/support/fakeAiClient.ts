@@ -11,6 +11,14 @@ export class ScriptedAiClient implements AiClient {
   plannerCalls: PlannerCallInput[] = [];
   executorCalls: ExecutorCallInput[] = [];
 
+  /**
+   * When > 0, the next runExecutor call throws instead of returning a
+   * scripted output (simulating a technical failure — network error,
+   * process crash mid-call — rather than a bad-but-parseable response).
+   * Decrements on each throw.
+   */
+  failNextExecutorCalls = 0;
+
   constructor(
     private plannerQueue: PlannerOutput[] = [],
     private executorQueue: ExecutorOutput[] = []
@@ -25,6 +33,10 @@ export class ScriptedAiClient implements AiClient {
 
   async runExecutor(input: ExecutorCallInput): Promise<AiCallResult<ExecutorOutput>> {
     this.executorCalls.push(input);
+    if (this.failNextExecutorCalls > 0) {
+      this.failNextExecutorCalls -= 1;
+      throw new Error("Simulated technical failure calling the Executor model.");
+    }
     const output = this.executorQueue.length > 1 ? this.executorQueue.shift()! : this.executorQueue[0];
     if (!output) throw new Error("ScriptedAiClient: no executor output queued");
     return { output, usage: { inputTokens: 600, cachedInputTokens: 0, outputTokens: 500 }, model: "test-executor-model" };
