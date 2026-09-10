@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
+import { readFile } from "node:fs/promises";
 import { renderImagePostAsset, AssetRenderError, IMAGE_POST_WIDTH, IMAGE_POST_HEIGHT } from "@/lib/agent/assetRenderer";
 
 // Live QA gap: v1 of the SolarDesk image_post asset technically executed
@@ -208,5 +209,157 @@ describe("renderImagePostAsset", () => {
     });
 
     expect(Buffer.compare(before.png, again.png)).toBe(0);
+  });
+});
+
+// Live QA gap #2: v2 correctly showed a real screenshot, but it was the
+// internal proposal-management screen (04.png) — the marketing intent
+// is to show the real client-facing proposal SolarDesk produces. These
+// tests cover the fix: a verified real proposal-example PDF (rendered
+// to PNG pages) can now become the dominant visual, taking precedence
+// over the internal screenshot when the brief asks to show the actual
+// output, while 04.png remains available for management-flavored briefs.
+describe("renderImagePostAsset — proposal-example composition", () => {
+  const proposalOutputInput = {
+    headline: "De la cotización a una propuesta lista para presentar",
+    ctaText: "Crea tu primera propuesta",
+    assetVersion: 3,
+    visualDirection: "Muestra la propuesta final en PDF que SolarDesk entrega al cliente, lista para presentar.",
+    purpose: "activation",
+    topic: "El resultado: una propuesta profesional para tu cliente",
+  };
+
+  const managementInput = {
+    headline: "Organiza todas tus propuestas en un solo lugar",
+    ctaText: "Comenzar gratis",
+    assetVersion: 3,
+    visualDirection: "Mockup B2B SaaS mostrando la experiencia de propuestas de SolarDesk.",
+    purpose: "activation",
+    topic: "Gestiona tus propuestas solares",
+  };
+
+  it("1. proposal-output intent selects the verified proposal example before 04.png", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as { selected: boolean };
+    const screenshot = result.provenance.screenshot as { selected: boolean };
+    expect(proposal.selected).toBe(true);
+    expect(screenshot.selected).toBe(false);
+  });
+
+  it("2. internal proposal-management intent can still select 04.png", async () => {
+    const result = await renderImagePostAsset(managementInput);
+    const proposal = result.provenance.proposalExample as { selected: boolean };
+    const screenshot = result.provenance.screenshot as { selected: boolean; file: string };
+    expect(proposal.selected).toBe(false);
+    expect(screenshot.selected).toBe(true);
+    expect(screenshot.file).toBe("04.png");
+  });
+
+  it("3. the selected proposal source originates from proposal-examples/", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as { pdfPath: string; pages: string[] };
+    expect(proposal.pdfPath).toContain("proposal-examples/");
+    for (const page of proposal.pages) {
+      expect(page).toContain("proposal-examples/");
+    }
+  });
+
+  it("4. references/ can never be selected as the proposal source", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as { pdfPath: string; pages: string[] };
+    expect(proposal.pdfPath).not.toContain("references");
+    for (const page of proposal.pages) {
+      expect(page).not.toContain("references");
+    }
+  });
+
+  it("5. the original verified PDF remains present and unchanged on disk", async () => {
+    const pdfPath = "brands/solardesk/assets/proposal-examples/propuesta-sistema-solar-residencial.pdf";
+    const buf = await readFile(pdfPath);
+    expect(buf.byteLength).toBe(403850);
+    expect(buf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
+
+  it("6. the rendered proposal pages used by the composition come from the verified rendered/ derivatives", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as { pages: string[] };
+    expect(proposal.pages).toEqual([
+      "brands/solardesk/assets/proposal-examples/rendered/page-1.png",
+      "brands/solardesk/assets/proposal-examples/rendered/page-2.png",
+    ]);
+  });
+
+  it("7. the proposal composition actually composites the real rendered page — output differs from the text-only render of the same copy", async () => {
+    const withProposal = await renderImagePostAsset(proposalOutputInput);
+    const textOnly = await renderImagePostAsset({
+      headline: proposalOutputInput.headline,
+      ctaText: proposalOutputInput.ctaText,
+      assetVersion: proposalOutputInput.assetVersion,
+    });
+    expect(Buffer.compare(withProposal.png, textOnly.png)).not.toBe(0);
+  });
+
+  it("8. the mandatory EJEMPLO FICTICIO label is recorded as present in the proposal composition", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as { selected: boolean; fictitiousLabel: string };
+    expect(proposal.selected).toBe(true);
+    expect(proposal.fictitiousLabel).toBe("EJEMPLO FICTICIO");
+  });
+
+  it("9. output remains a PNG at 1080x1350 for the proposal composition", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    expect(result.width).toBe(IMAGE_POST_WIDTH);
+    expect(result.height).toBe(IMAGE_POST_HEIGHT);
+    const meta = await sharp(result.png).metadata();
+    expect(meta.format).toBe("png");
+    expect(meta.width).toBe(1080);
+    expect(meta.height).toBe(1350);
+  });
+
+  it("10. the official SolarDesk logo remains present in the proposal composition", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    expect(result.provenance.logoFile).toBe("brands/solardesk/assets/logos/logo.png");
+  });
+
+  it("11. rendering never mutates the input it was given (approved draft content stays untouched)", async () => {
+    const input = { ...proposalOutputInput };
+    const snapshot = { ...input };
+    await renderImagePostAsset(input);
+    expect(input).toEqual(snapshot);
+  });
+
+  it("12. the proposal PDF's example-specific figures are never surfaced as new marketing claims — provenance only records paths/labels, not extracted figures", async () => {
+    const result = await renderImagePostAsset(proposalOutputInput);
+    const proposal = result.provenance.proposalExample as Record<string, unknown>;
+    const serialized = JSON.stringify(proposal);
+    // None of the PDF's concrete example figures (investment, savings,
+    // payback years, client name) appear anywhere in what this
+    // renderer records about the choice it made.
+    expect(serialized).not.toMatch(/11\.465\.772|2\.400\.000|Jhon Doe|4\.8/);
+  });
+
+  it("13. the text-only fallback remains functional when no proposal/screenshot signal is present", async () => {
+    const result = await renderImagePostAsset({
+      headline: "Titulo corto",
+      ctaText: "Comenzar gratis",
+      assetVersion: 1,
+      visualDirection: "SaaS B2B limpio, azul oscuro y ámbar.",
+      purpose: "activation",
+      topic: "Comienza gratis en SolarDesk",
+    });
+    expect(result.provenance.renderer).toBe("svg-sharp-v1");
+    expect((result.provenance.proposalExample as { selected: boolean }).selected).toBe(false);
+    expect((result.provenance.screenshot as { selected: boolean }).selected).toBe(false);
+  });
+
+  it("14. the product-screenshot composition remains functional for management-flavored briefs", async () => {
+    const result = await renderImagePostAsset(managementInput);
+    expect(result.provenance.renderer).toBe("svg-sharp-product-v1");
+  });
+
+  it("15. existing asset dimensions/versioning behavior is unchanged by this feature (still 1080x1350 for the management/screenshot path)", async () => {
+    const result = await renderImagePostAsset(managementInput);
+    expect(result.width).toBe(IMAGE_POST_WIDTH);
+    expect(result.height).toBe(IMAGE_POST_HEIGHT);
   });
 });

@@ -2,17 +2,25 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
+import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
 // rasterized by Sharp, with the real official logo PNG composited on
 // top unmodified. No generative image model, no browser automation.
-// Two fixed compositions only (still not a general layout engine):
+// Three fixed compositions only (still not a general layout engine):
 //   - text-only: navy canvas, accent bar, logo, headline, CTA pill.
 //   - product: same brand chrome, but with a real verified SolarDesk
 //     product screenshot framed as the primary visual element, chosen
 //     by lib/agent/productScreenshots.ts from `visualDirection` /
 //     `purpose` / `topic`. Never AI-selected, never generated pixels —
 //     only real screenshot bytes, cropped/masked/resized/rounded.
+//   - proposal: same brand chrome, but with the real verified
+//     client-facing proposal example (a real PDF's rendered pages)
+//     framed as the dominant visual, chosen by
+//     lib/agent/proposalExamples.ts and marked with a mandatory
+//     "EJEMPLO FICTICIO" label. Takes precedence over the product
+//     composition when the brief asks to show the actual proposal
+//     output rather than the internal management screen.
 // The only other variation is a deterministic function of the asset
 // version number (see THEMES below) — never random, never AI.
 
@@ -36,6 +44,14 @@ const LOGO_FILE = "brands/solardesk/assets/logos/logo.png";
 const LOGO_WIDTH = 260;
 
 const SCREENSHOT_DIR = "brands/solardesk/assets/product-screenshots";
+// Kept as a local literal (matching proposalExamples.ts's exported
+// PROPOSAL_RENDERED_DIR, which must stay equal to this) rather than
+// imported directly: Next's build-time file tracer can only resolve a
+// fs path as statically scoped when the directory literal is declared
+// in the same module as the fs call, same as SCREENSHOT_DIR above —
+// an imported constant is treated as fully dynamic and triggers
+// whole-project tracing.
+const PROPOSAL_RENDERED_DIR = "brands/solardesk/assets/proposal-examples/rendered";
 
 export class AssetRenderError extends Error {}
 
@@ -123,6 +139,26 @@ const PRODUCT_CARD_RADIUS = 24;
 const PRODUCT_CHROME_HEIGHT = 40;
 const PRODUCT_CTA_Y = 1180;
 
+// Fixed layout constants for the proposal-example composition: the
+// real proposal page(s) become the dominant visual, with a smaller
+// headline above and a mandatory "EJEMPLO FICTICIO" badge between the
+// headline and the document stack.
+const PROPOSAL_LOGO_Y = 56;
+const PROPOSAL_HEADLINE_TOP_Y = 230;
+const PROPOSAL_HEADLINE_SIZES = [46, 40, 36, 32];
+const PROPOSAL_HEADLINE_MAX_LINES = 2;
+const PROPOSAL_BADGE_TOP_Y = 320;
+const PROPOSAL_BADGE_HEIGHT = 56;
+const PROPOSAL_BADGE_FONT_SIZE = 28;
+const PROPOSAL_BADGE_TEXT = "EJEMPLO FICTICIO";
+const PROPOSAL_STACK_TOP_Y = 404;
+const PROPOSAL_STACK_BOTTOM_MAX_Y = 1170;
+const PROPOSAL_PAGE_OFFSET = 76; // how far page 2 peeks out behind/below page 1
+const PROPOSAL_FRAME_MARGIN = 10; // white "mat" border drawn around each page
+const PROPOSAL_FRAME_RADIUS = 20;
+const PROPOSAL_PAGE_RADIUS = 12;
+const PROPOSAL_CTA_Y = 1250;
+
 export interface RenderAssetInput {
   headline: string;
   ctaText: string;
@@ -204,6 +240,96 @@ async function prepareScreenshotCard(meta: ScreenshotMeta, displayWidth: number,
   return { buffer: rounded, height: displayHeight };
 }
 
+interface PageCard {
+  buffer: Buffer;
+  width: number;
+  height: number;
+}
+
+/**
+ * Loads a direct raster derivative of a real PDF proposal page and
+ * rounds its corners for framing. Never redraws, retypesets, or alters
+ * pixels inside the page — only resizes (preserving aspect ratio) and
+ * rounds corners, the same allowed evidence-safe operations used for
+ * product screenshots.
+ */
+async function preparePageCard(pageFile: string, displayWidth: number, radius: number, cropHeight?: number): Promise<PageCard> {
+  const filePath = path.join(process.cwd(), PROPOSAL_RENDERED_DIR, pageFile);
+  const raw = await readFile(filePath);
+  const meta = await sharp(raw).metadata();
+  if (!meta.width || !meta.height) {
+    throw new AssetRenderError(`Could not read dimensions for proposal page asset: ${pageFile}`);
+  }
+
+  const sourceHeight = cropHeight && cropHeight > 0 && cropHeight <= meta.height ? cropHeight : meta.height;
+  const source =
+    sourceHeight === meta.height
+      ? raw
+      : await sharp(raw).extract({ left: 0, top: 0, width: meta.width, height: sourceHeight }).png().toBuffer();
+
+  const displayHeight = Math.round((displayWidth / meta.width) * sourceHeight);
+  const resized = await sharp(source).resize({ width: displayWidth, height: displayHeight, fit: "cover" }).png().toBuffer();
+
+  const roundedMaskSvg = `<svg width="${displayWidth}" height="${displayHeight}"><rect x="0" y="0" width="${displayWidth}" height="${displayHeight}" rx="${radius}" ry="${radius}" fill="#fff"/></svg>`;
+  const rounded = await sharp(resized)
+    .composite([{ input: Buffer.from(roundedMaskSvg), blend: "dest-in" }])
+    .png()
+    .toBuffer();
+
+  return { buffer: rounded, width: displayWidth, height: displayHeight };
+}
+
+interface ProposalStack {
+  page1: PageCard;
+  page2: PageCard;
+  page1X: number;
+  page1Y: number;
+  page2X: number;
+  page2Y: number;
+}
+
+/**
+ * Prepares the two real proposal pages as a "stacked documents" visual:
+ * page 1 dominant and fully visible, page 2 behind it offset down and
+ * to the right so only its edges peek out. Any failure here (missing
+ * derivative file, unreadable dimensions) is the caller's signal to
+ * fall back safely rather than fabricating a proposal.
+ */
+async function prepareProposalStack(meta: ProposalExampleMeta): Promise<ProposalStack> {
+  const [page1Meta, page2Meta] = meta.pages;
+
+  const availableHeight = PROPOSAL_STACK_BOTTOM_MAX_Y - PROPOSAL_STACK_TOP_Y - PROPOSAL_PAGE_OFFSET;
+  const page1Raw = await readFile(path.join(process.cwd(), PROPOSAL_RENDERED_DIR, page1Meta.file));
+  const page1RawMeta = await sharp(page1Raw).metadata();
+  if (!page1RawMeta.width || !page1RawMeta.height) {
+    throw new AssetRenderError(`Could not read dimensions for proposal page asset: ${page1Meta.file}`);
+  }
+  const page1ContentHeight =
+    page1Meta.contentHeight > 0 && page1Meta.contentHeight <= page1RawMeta.height ? page1Meta.contentHeight : page1RawMeta.height;
+  const aspect = page1ContentHeight / page1RawMeta.width;
+  const page1Width = Math.round(availableHeight / aspect);
+
+  const page1 = await preparePageCard(page1Meta.file, page1Width, PROPOSAL_PAGE_RADIUS, page1ContentHeight);
+  // Page 2 is only a "peek" behind page 1 (see prepareProposalStack's
+  // doc comment) — it is cropped to the same box proportions as page 1
+  // (rather than its own full contentHeight) purely so the stack reads
+  // as two same-size documents, not because more of page 2 would be
+  // unsafe to show.
+  const page2 = await preparePageCard(page2Meta.file, page1Width, PROPOSAL_PAGE_RADIUS, page1ContentHeight);
+
+  const stackWidth = page1.width + PROPOSAL_PAGE_OFFSET;
+  const stackLeft = Math.round((IMAGE_POST_WIDTH - stackWidth) / 2);
+
+  return {
+    page1,
+    page2,
+    page1X: stackLeft,
+    page1Y: PROPOSAL_STACK_TOP_Y,
+    page2X: stackLeft + PROPOSAL_PAGE_OFFSET,
+    page2Y: PROPOSAL_STACK_TOP_Y + PROPOSAL_PAGE_OFFSET,
+  };
+}
+
 /**
  * Pure rendering function — no DB, no storage, no network. Given the
  * approved draft's own hook (headline) and CTA text, produces a
@@ -221,28 +347,51 @@ async function prepareScreenshotCard(meta: ScreenshotMeta, displayWidth: number,
 export async function renderImagePostAsset(input: RenderAssetInput): Promise<RenderAssetResult> {
   const theme = THEMES[themeForVersion(input.assetVersion)];
 
-  const screenshotMeta = selectProductScreenshot({
+  const selectionInput = {
     visualDirection: input.visualDirection ?? "",
     purpose: input.purpose ?? "",
     topic: input.topic ?? "",
-  });
+  };
 
-  let screenshotCard: { buffer: Buffer; height: number } | null = null;
-  if (screenshotMeta) {
+  // Proposal-example takes precedence over the internal product
+  // screenshot when the brief clearly asks to show the actual
+  // client-facing proposal/output (see proposalExamples.ts) — only
+  // falls through to the screenshot catalog when no proposal example
+  // is selected, or the selected one cannot be safely prepared.
+  const proposalMeta = selectProposalExample(selectionInput);
+  let proposalStack: ProposalStack | null = null;
+  if (proposalMeta) {
     try {
-      const displayWidth = PRODUCT_CARD_WIDTH - PRODUCT_CARD_PADDING * 2;
-      screenshotCard = await prepareScreenshotCard(screenshotMeta, displayWidth, PRODUCT_CARD_RADIUS - PRODUCT_CARD_PADDING / 2);
+      proposalStack = await prepareProposalStack(proposalMeta);
     } catch {
-      // Fail safely: never fabricate UI. Fall back to the text-only composition.
-      screenshotCard = null;
+      // Fail safely: never fabricate a proposal. Fall back to the screenshot/text-only path.
+      proposalStack = null;
+    }
+  }
+  const usesProposalLayout = proposalStack !== null;
+
+  let screenshotMeta: ScreenshotMeta | null = null;
+  let screenshotCard: { buffer: Buffer; height: number } | null = null;
+  if (!usesProposalLayout) {
+    screenshotMeta = selectProductScreenshot(selectionInput);
+    if (screenshotMeta) {
+      try {
+        const displayWidth = PRODUCT_CARD_WIDTH - PRODUCT_CARD_PADDING * 2;
+        screenshotCard = await prepareScreenshotCard(screenshotMeta, displayWidth, PRODUCT_CARD_RADIUS - PRODUCT_CARD_PADDING / 2);
+      } catch {
+        // Fail safely: never fabricate UI. Fall back to the text-only composition.
+        screenshotCard = null;
+      }
     }
   }
 
   const usesProductLayout = screenshotCard !== null;
 
-  const headlineWrap = usesProductLayout
-    ? wrapToFit(input.headline, PRODUCT_HEADLINE_SIZES, CONTENT_WIDTH, PRODUCT_HEADLINE_MAX_LINES)
-    : wrapToFit(input.headline, [72, 64, 56, 48, 40], CONTENT_WIDTH, 4);
+  const headlineWrap = usesProposalLayout
+    ? wrapToFit(input.headline, PROPOSAL_HEADLINE_SIZES, CONTENT_WIDTH, PROPOSAL_HEADLINE_MAX_LINES)
+    : usesProductLayout
+      ? wrapToFit(input.headline, PRODUCT_HEADLINE_SIZES, CONTENT_WIDTH, PRODUCT_HEADLINE_MAX_LINES)
+      : wrapToFit(input.headline, [72, 64, 56, 48, 40], CONTENT_WIDTH, 4);
   if (!headlineWrap) {
     throw new AssetRenderError(
       "The approved headline is too long to render safely within the image layout without truncating or overflowing it."
@@ -265,9 +414,9 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
       ? `<rect x="0" y="0" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`
       : `<rect x="0" y="${IMAGE_POST_HEIGHT - 24}" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`;
 
-  const headlineY = usesProductLayout ? PRODUCT_HEADLINE_TOP_Y : theme.headlineY;
-  const ctaY = usesProductLayout ? PRODUCT_CTA_Y : theme.ctaY;
-  const logoY = usesProductLayout ? PRODUCT_LOGO_Y : theme.logoY;
+  const headlineY = usesProposalLayout ? PROPOSAL_HEADLINE_TOP_Y : usesProductLayout ? PRODUCT_HEADLINE_TOP_Y : theme.headlineY;
+  const ctaY = usesProposalLayout ? PROPOSAL_CTA_Y : usesProductLayout ? PRODUCT_CTA_Y : theme.ctaY;
+  const logoY = usesProposalLayout ? PROPOSAL_LOGO_Y : usesProductLayout ? PRODUCT_LOGO_Y : theme.logoY;
 
   const lineHeight = headlineWrap.fontSize * 1.25;
   const headlineLinesSvg = headlineWrap.lines
@@ -294,6 +443,39 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     `;
   }
 
+  let proposalSvg = "";
+  let badgeSvg = "";
+  if (usesProposalLayout && proposalStack) {
+    const { page1, page2, page1X, page1Y, page2X, page2Y } = proposalStack;
+    const m = PROPOSAL_FRAME_MARGIN;
+    // Shadow (offset dark rect), white "mat" frame, then the real page
+    // image is composited on top afterward — page 2 drawn first so it
+    // peeks out from behind page 1.
+    proposalSvg = `
+      <rect x="${page2X - m + 6}" y="${page2Y - m + 8}" width="${page2.width + m * 2}" height="${page2.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${NAVY}" opacity="0.18" />
+      <rect x="${page2X - m}" y="${page2Y - m}" width="${page2.width + m * 2}" height="${page2.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${WHITE}" />
+      <rect x="${page1X - m + 6}" y="${page1Y - m + 8}" width="${page1.width + m * 2}" height="${page1.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${NAVY}" opacity="0.22" />
+      <rect x="${page1X - m}" y="${page1Y - m}" width="${page1.width + m * 2}" height="${page1.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${WHITE}" />
+    `;
+
+    const badgeTextWidth = PROPOSAL_BADGE_TEXT.length * PROPOSAL_BADGE_FONT_SIZE * 0.62;
+    const badgeWidth = badgeTextWidth + 72;
+    const badgeX = (IMAGE_POST_WIDTH - badgeWidth) / 2;
+    badgeSvg = `
+      <rect x="${badgeX}" y="${PROPOSAL_BADGE_TOP_Y}" width="${badgeWidth}" height="${PROPOSAL_BADGE_HEIGHT}" rx="${PROPOSAL_BADGE_HEIGHT / 2}" fill="${NAVY}" stroke="${AMBER}" stroke-width="2" />
+      <text
+        x="${IMAGE_POST_WIDTH / 2}"
+        y="${PROPOSAL_BADGE_TOP_Y + PROPOSAL_BADGE_HEIGHT / 2 + PROPOSAL_BADGE_FONT_SIZE * 0.32}"
+        text-anchor="middle"
+        font-family="${FONT_STACK}"
+        font-weight="bold"
+        font-size="${PROPOSAL_BADGE_FONT_SIZE}"
+        letter-spacing="2"
+        fill="${AMBER}"
+      >${escapeXml(PROPOSAL_BADGE_TEXT)}</text>
+    `;
+  }
+
   const svg = `
     <svg width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
       <rect x="0" y="0" width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" fill="${NAVY}" />
@@ -308,6 +490,8 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
         fill="${WHITE}"
       >${headlineLinesSvg}</text>
       ${cardSvg}
+      ${proposalSvg}
+      ${badgeSvg}
       <rect
         x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
         y="${ctaY - ctaPillHeight / 2}"
@@ -335,6 +519,10 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   if (usesProductLayout && screenshotCard) {
     composites.push({ input: screenshotCard.buffer, top: screenshotTop, left: screenshotLeft });
   }
+  if (usesProposalLayout && proposalStack) {
+    composites.push({ input: proposalStack.page2.buffer, top: proposalStack.page2Y, left: proposalStack.page2X });
+    composites.push({ input: proposalStack.page1.buffer, top: proposalStack.page1Y, left: proposalStack.page1X });
+  }
 
   const png = await sharp(backgroundPng).composite(composites).png().toBuffer();
 
@@ -343,7 +531,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     width: IMAGE_POST_WIDTH,
     height: IMAGE_POST_HEIGHT,
     provenance: {
-      renderer: usesProductLayout ? "svg-sharp-product-v1" : "svg-sharp-v1",
+      renderer: usesProposalLayout ? "svg-sharp-proposal-v1" : usesProductLayout ? "svg-sharp-product-v1" : "svg-sharp-v1",
       theme: themeForVersion(input.assetVersion),
       logoFile: LOGO_FILE,
       headline: { source: "draft.hook", fontSize: headlineWrap.fontSize, lines: headlineWrap.lines.length },
@@ -354,6 +542,14 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
             file: screenshotMeta.file,
             visibleSubject: screenshotMeta.visibleSubject,
             source: SCREENSHOT_DIR,
+          }
+        : { selected: false },
+      proposalExample: proposalMeta
+        ? {
+            selected: usesProposalLayout,
+            pdfPath: proposalMeta.pdfPath,
+            pages: proposalMeta.pages.map((p) => `${PROPOSAL_RENDERED_DIR}/${p.file}`),
+            fictitiousLabel: PROPOSAL_BADGE_TEXT,
           }
         : { selected: false },
     },
