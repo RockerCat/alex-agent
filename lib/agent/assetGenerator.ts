@@ -2,6 +2,22 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, ContentAssetRow } from "@/lib/types/database";
 import { renderImagePostAsset, AssetRenderError } from "@/lib/agent/assetRenderer";
 import { AssetStorageError, type AssetStorage } from "@/lib/agent/assetStorage";
+import { assetRenderSpecSchema, DEFAULT_RENDER_SPEC, type AssetRenderSpec } from "@/lib/agent/schemas";
+
+/**
+ * Extracts the render spec actually used for `asset`'s composition
+ * (recorded in render_provenance.renderSpec by assetRenderer.ts), or
+ * the default (today's original fixed layout) when there is no asset
+ * yet, the asset predates this feature, or its provenance is somehow
+ * malformed — never throws, so a corrupted/legacy provenance blob can
+ * never block generation or revision.
+ */
+export function getEffectiveRenderSpec(asset: ContentAssetRow | null): AssetRenderSpec {
+  if (!asset) return DEFAULT_RENDER_SPEC;
+  const candidate = (asset.render_provenance as Record<string, unknown> | null)?.renderSpec;
+  const parsed = assetRenderSpecSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : DEFAULT_RENDER_SPEC;
+}
 
 export interface GenerateAssetOutcome {
   status: "success" | "ineligible" | "failed" | "concurrent";
@@ -76,6 +92,13 @@ export async function generateAsset(params: {
 
   const existing = await listAssets(db, draftId);
   const nextVersion = (existing[0]?.asset_version ?? 0) + 1;
+  // Regenerate carries forward whatever render spec is currently in
+  // effect (default, or previously adjusted via Request Changes) —
+  // "create another version without new feedback" must not silently
+  // discard feedback Alex already gave. Only the deterministic
+  // version-parity theme (accent bar position, and text-only layout
+  // headline/logo/CTA position) actually varies between versions.
+  const effectiveSpec = getEffectiveRenderSpec(existing[0] ?? null);
 
   let rendered;
   try {
@@ -86,6 +109,7 @@ export async function generateAsset(params: {
       visualDirection: draft.visual_direction ?? "",
       purpose: draft.purpose,
       topic: draft.topic,
+      renderSpec: effectiveSpec,
     });
   } catch (err) {
     const message = err instanceof AssetRenderError ? err.message : `Unexpected render error: ${err instanceof Error ? err.message : String(err)}`;

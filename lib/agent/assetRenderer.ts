@@ -3,6 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
 import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
+import { DEFAULT_RENDER_SPEC, type AssetRenderSpec } from "@/lib/agent/schemas";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
 // rasterized by Sharp, with the real official logo PNG composited on
@@ -134,7 +135,6 @@ const PRODUCT_HEADLINE_SIZES = [52, 44, 38, 34];
 const PRODUCT_HEADLINE_MAX_LINES = 3;
 const PRODUCT_CARD_Y = 460;
 const PRODUCT_CARD_WIDTH = CONTENT_WIDTH;
-const PRODUCT_CARD_X = (IMAGE_POST_WIDTH - PRODUCT_CARD_WIDTH) / 2;
 const PRODUCT_CARD_PADDING = 20;
 const PRODUCT_CARD_RADIUS = 24;
 const PRODUCT_CHROME_HEIGHT = 40;
@@ -159,6 +159,51 @@ const PROPOSAL_DISCLOSURE_FONT_SIZE = 24;
 const PROPOSAL_DISCLOSURE_TEXT = "Propuesta de ejemplo · Valores ilustrativos";
 const PROPOSAL_CTA_Y = 1250;
 
+// Bounded, renderer-owned presets for AssetRenderSpec (lib/agent/schemas.ts).
+// The AI feedback interpreter only ever picks one of the enum keys on
+// the left — every actual pixel/scale value here is a fixed constant
+// it never sees or controls. "normal" on every field reproduces
+// today's layout exactly (same numbers as the constants above).
+const PRODUCT_PRIMARY_VISUAL_SCALE: Record<AssetRenderSpec["primaryVisualScale"], number> = {
+  normal: 1.0,
+  large: 1.08,
+  dominant: 1.16,
+};
+// The proposal stack's height is already tightly budgeted against the
+// fixed disclosure line and CTA below it, so growth there comes from
+// reclaiming a few pixels of the headline gap rather than a
+// width/height multiplier (which risks colliding with the disclosure
+// line or CTA — see prepareProposalStack).
+const PROPOSAL_STACK_TOP_Y_BY_SCALE: Record<AssetRenderSpec["primaryVisualScale"], number> = {
+  normal: PROPOSAL_STACK_TOP_Y,
+  large: 318,
+  dominant: 308,
+};
+const CTA_EMPHASIS_FONT_SIZES: Record<AssetRenderSpec["ctaEmphasis"], number[]> = {
+  subtle: [22, 20, 18],
+  normal: [32, 28, 24],
+  strong: [40, 36, 32],
+};
+const CTA_EMPHASIS_PADDING_SCALE: Record<AssetRenderSpec["ctaEmphasis"], number> = {
+  subtle: 0.85,
+  normal: 1.0,
+  strong: 1.15,
+};
+const LOGO_EMPHASIS_SCALE: Record<AssetRenderSpec["logoEmphasis"], number> = {
+  subtle: 0.8,
+  normal: 1.0,
+  strong: 1.25,
+};
+const SECONDARY_PAGE_OFFSET_BY_VISIBILITY: Record<AssetRenderSpec["secondaryPageVisibility"], number> = {
+  hidden: 0,
+  subtle: 40,
+  normal: PROPOSAL_PAGE_OFFSET,
+};
+const DISCLOSURE_PRESETS: Record<AssetRenderSpec["disclosureEmphasis"], { fontSize: number; opacity: number }> = {
+  subtle: { fontSize: 20, opacity: 0.48 },
+  normal: { fontSize: PROPOSAL_DISCLOSURE_FONT_SIZE, opacity: 0.62 },
+};
+
 export interface RenderAssetInput {
   headline: string;
   ctaText: string;
@@ -167,6 +212,8 @@ export interface RenderAssetInput {
   visualDirection?: string;
   purpose?: string;
   topic?: string;
+  /** Bounded composition adjustments (see lib/agent/schemas.ts). Defaults to DEFAULT_RENDER_SPEC, which reproduces the original fixed layout exactly. */
+  renderSpec?: AssetRenderSpec;
 }
 
 export interface RenderAssetResult {
@@ -176,11 +223,11 @@ export interface RenderAssetResult {
   provenance: Record<string, unknown>;
 }
 
-async function loadLogoBuffer(): Promise<Buffer> {
+async function loadLogoBuffer(width: number): Promise<Buffer> {
   try {
     const logoPath = path.join(process.cwd(), LOGO_FILE);
     const rawLogo = await readFile(logoPath);
-    return await sharp(rawLogo).resize({ width: LOGO_WIDTH, fit: "inside" }).png().toBuffer();
+    return await sharp(rawLogo).resize({ width, fit: "inside" }).png().toBuffer();
   } catch (err) {
     throw new AssetRenderError(
       `Could not load the official SolarDesk logo asset (${LOGO_FILE}): ${err instanceof Error ? err.message : String(err)}`
@@ -281,7 +328,7 @@ async function preparePageCard(pageFile: string, displayWidth: number, radius: n
 
 interface ProposalStack {
   page1: PageCard;
-  page2: PageCard;
+  page2: PageCard | null;
   page1X: number;
   page1Y: number;
   page2X: number;
@@ -291,14 +338,19 @@ interface ProposalStack {
 /**
  * Prepares the two real proposal pages as a "stacked documents" visual:
  * page 1 dominant and fully visible, page 2 behind it offset down and
- * to the right so only its edges peek out. Any failure here (missing
- * derivative file, unreadable dimensions) is the caller's signal to
- * fall back safely rather than fabricating a proposal.
+ * to the right so only its edges peek out (or omitted entirely when
+ * `spec.secondaryPageVisibility` is "hidden"). Any failure here
+ * (missing derivative file, unreadable dimensions) is the caller's
+ * signal to fall back safely rather than fabricating a proposal.
  */
-async function prepareProposalStack(meta: ProposalExampleMeta): Promise<ProposalStack> {
+async function prepareProposalStack(meta: ProposalExampleMeta, spec: AssetRenderSpec): Promise<ProposalStack> {
   const [page1Meta, page2Meta] = meta.pages;
 
-  const availableHeight = PROPOSAL_STACK_BOTTOM_MAX_Y - PROPOSAL_STACK_TOP_Y - PROPOSAL_PAGE_OFFSET;
+  const stackTopY = PROPOSAL_STACK_TOP_Y_BY_SCALE[spec.primaryVisualScale];
+  const pageOffset = SECONDARY_PAGE_OFFSET_BY_VISIBILITY[spec.secondaryPageVisibility];
+  const showSecondaryPage = spec.secondaryPageVisibility !== "hidden";
+
+  const availableHeight = PROPOSAL_STACK_BOTTOM_MAX_Y - stackTopY - pageOffset;
   const page1Raw = await readFile(path.join(process.cwd(), PROPOSAL_RENDERED_DIR, page1Meta.file));
   const page1RawMeta = await sharp(page1Raw).metadata();
   if (!page1RawMeta.width || !page1RawMeta.height) {
@@ -315,18 +367,18 @@ async function prepareProposalStack(meta: ProposalExampleMeta): Promise<Proposal
   // (rather than its own full contentHeight) purely so the stack reads
   // as two same-size documents, not because more of page 2 would be
   // unsafe to show.
-  const page2 = await preparePageCard(page2Meta.file, page1Width, PROPOSAL_PAGE_RADIUS, page1ContentHeight);
+  const page2 = showSecondaryPage ? await preparePageCard(page2Meta.file, page1Width, PROPOSAL_PAGE_RADIUS, page1ContentHeight) : null;
 
-  const stackWidth = page1.width + PROPOSAL_PAGE_OFFSET;
+  const stackWidth = page1.width + pageOffset;
   const stackLeft = Math.round((IMAGE_POST_WIDTH - stackWidth) / 2);
 
   return {
     page1,
     page2,
     page1X: stackLeft,
-    page1Y: PROPOSAL_STACK_TOP_Y,
-    page2X: stackLeft + PROPOSAL_PAGE_OFFSET,
-    page2Y: PROPOSAL_STACK_TOP_Y + PROPOSAL_PAGE_OFFSET,
+    page1Y: stackTopY,
+    page2X: stackLeft + pageOffset,
+    page2Y: stackTopY + pageOffset,
   };
 }
 
@@ -346,6 +398,7 @@ async function prepareProposalStack(meta: ProposalExampleMeta): Promise<Proposal
  */
 export async function renderImagePostAsset(input: RenderAssetInput): Promise<RenderAssetResult> {
   const theme = THEMES[themeForVersion(input.assetVersion)];
+  const spec = input.renderSpec ?? DEFAULT_RENDER_SPEC;
 
   const selectionInput = {
     visualDirection: input.visualDirection ?? "",
@@ -362,7 +415,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   let proposalStack: ProposalStack | null = null;
   if (proposalMeta) {
     try {
-      proposalStack = await prepareProposalStack(proposalMeta);
+      proposalStack = await prepareProposalStack(proposalMeta, spec);
     } catch {
       // Fail safely: never fabricate a proposal. Fall back to the screenshot/text-only path.
       proposalStack = null;
@@ -370,13 +423,22 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   }
   const usesProposalLayout = proposalStack !== null;
 
+  // primaryVisualScale scales the whole card (not just its inner
+  // display area), clamped so it can never approach the canvas edges
+  // regardless of how large the requested scale is.
+  const productCardWidth = Math.min(
+    IMAGE_POST_WIDTH - 48,
+    Math.round(PRODUCT_CARD_WIDTH * PRODUCT_PRIMARY_VISUAL_SCALE[spec.primaryVisualScale])
+  );
+  const productCardX = Math.round((IMAGE_POST_WIDTH - productCardWidth) / 2);
+
   let screenshotMeta: ScreenshotMeta | null = null;
   let screenshotCard: { buffer: Buffer; height: number } | null = null;
   if (!usesProposalLayout) {
     screenshotMeta = selectProductScreenshot(selectionInput);
     if (screenshotMeta) {
       try {
-        const displayWidth = PRODUCT_CARD_WIDTH - PRODUCT_CARD_PADDING * 2;
+        const displayWidth = productCardWidth - PRODUCT_CARD_PADDING * 2;
         screenshotCard = await prepareScreenshotCard(screenshotMeta, displayWidth, PRODUCT_CARD_RADIUS - PRODUCT_CARD_PADDING / 2);
       } catch {
         // Fail safely: never fabricate UI. Fall back to the text-only composition.
@@ -398,7 +460,8 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     );
   }
 
-  const ctaWrap = wrapToFit(input.ctaText, [32, 28, 24], CONTENT_WIDTH - 96, 1);
+  const ctaPaddingScale = CTA_EMPHASIS_PADDING_SCALE[spec.ctaEmphasis];
+  const ctaWrap = wrapToFit(input.ctaText, CTA_EMPHASIS_FONT_SIZES[spec.ctaEmphasis], CONTENT_WIDTH - 96, 1);
   if (!ctaWrap) {
     throw new AssetRenderError(
       "The approved CTA text is too long to render safely within a single-line CTA pill."
@@ -406,8 +469,8 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   }
   const ctaLine = ctaWrap.lines[0];
   const ctaFontSize = ctaWrap.fontSize;
-  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96);
-  const ctaPillHeight = ctaFontSize + 48;
+  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96 * ctaPaddingScale);
+  const ctaPillHeight = ctaFontSize + 48 * ctaPaddingScale;
 
   const accentBarSvg =
     theme.accentBarPosition === "top"
@@ -431,15 +494,15 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   let screenshotLeft = 0;
   if (usesProductLayout && screenshotCard) {
     const cardHeight = PRODUCT_CHROME_HEIGHT + screenshotCard.height + PRODUCT_CARD_PADDING;
-    screenshotLeft = PRODUCT_CARD_X + PRODUCT_CARD_PADDING;
+    screenshotLeft = productCardX + PRODUCT_CARD_PADDING;
     screenshotTop = PRODUCT_CARD_Y + PRODUCT_CHROME_HEIGHT;
     const dotCy = PRODUCT_CARD_Y + PRODUCT_CHROME_HEIGHT / 2;
     cardSvg = `
-      <rect x="${PRODUCT_CARD_X}" y="${PRODUCT_CARD_Y}" width="${PRODUCT_CARD_WIDTH}" height="${cardHeight}" rx="${PRODUCT_CARD_RADIUS}" fill="${WHITE}" stroke="${NEUTRAL}" stroke-width="2" />
-      <rect x="${PRODUCT_CARD_X}" y="${PRODUCT_CARD_Y}" width="${PRODUCT_CARD_WIDTH}" height="${PRODUCT_CHROME_HEIGHT}" rx="${PRODUCT_CARD_RADIUS}" fill="${NEUTRAL}" />
-      <circle cx="${PRODUCT_CARD_X + 24}" cy="${dotCy}" r="6" fill="${AMBER}" />
-      <circle cx="${PRODUCT_CARD_X + 44}" cy="${dotCy}" r="6" fill="${NAVY}" />
-      <circle cx="${PRODUCT_CARD_X + 64}" cy="${dotCy}" r="6" fill="${WHITE}" />
+      <rect x="${productCardX}" y="${PRODUCT_CARD_Y}" width="${productCardWidth}" height="${cardHeight}" rx="${PRODUCT_CARD_RADIUS}" fill="${WHITE}" stroke="${NEUTRAL}" stroke-width="2" />
+      <rect x="${productCardX}" y="${PRODUCT_CARD_Y}" width="${productCardWidth}" height="${PRODUCT_CHROME_HEIGHT}" rx="${PRODUCT_CARD_RADIUS}" fill="${NEUTRAL}" />
+      <circle cx="${productCardX + 24}" cy="${dotCy}" r="6" fill="${AMBER}" />
+      <circle cx="${productCardX + 44}" cy="${dotCy}" r="6" fill="${NAVY}" />
+      <circle cx="${productCardX + 64}" cy="${dotCy}" r="6" fill="${WHITE}" />
     `;
   }
 
@@ -450,10 +513,16 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     const m = PROPOSAL_FRAME_MARGIN;
     // Shadow (offset dark rect), white "mat" frame, then the real page
     // image is composited on top afterward — page 2 drawn first so it
-    // peeks out from behind page 1.
-    proposalSvg = `
+    // peeks out from behind page 1. page2 is null when
+    // secondaryPageVisibility is "hidden" — only page 1's frame is drawn.
+    const page2FrameSvg = page2
+      ? `
       <rect x="${page2X - m + 6}" y="${page2Y - m + 8}" width="${page2.width + m * 2}" height="${page2.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${NAVY}" opacity="0.18" />
       <rect x="${page2X - m}" y="${page2Y - m}" width="${page2.width + m * 2}" height="${page2.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${WHITE}" />
+      `
+      : "";
+    proposalSvg = `
+      ${page2FrameSvg}
       <rect x="${page1X - m + 6}" y="${page1Y - m + 8}" width="${page1.width + m * 2}" height="${page1.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${NAVY}" opacity="0.22" />
       <rect x="${page1X - m}" y="${page1Y - m}" width="${page1.width + m * 2}" height="${page1.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${WHITE}" />
     `;
@@ -462,7 +531,8 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     // document stack's own frame — muted so it reads as a small print
     // disclosure belonging to the proposal, not a warning interrupting
     // the headline -> proposal -> CTA hierarchy.
-    const stackOuterBottom = page2Y + page2.height + m;
+    const stackOuterBottom = page2 ? page2Y + page2.height + m : page1Y + page1.height + m;
+    const disclosurePreset = DISCLOSURE_PRESETS[spec.disclosureEmphasis];
     const disclosureY = stackOuterBottom + PROPOSAL_DISCLOSURE_GAP;
     disclosureSvg = `
       <text
@@ -471,9 +541,9 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
         text-anchor="middle"
         font-family="${FONT_STACK}"
         font-weight="normal"
-        font-size="${PROPOSAL_DISCLOSURE_FONT_SIZE}"
+        font-size="${disclosurePreset.fontSize}"
         fill="${WHITE}"
-        fill-opacity="0.62"
+        fill-opacity="${disclosurePreset.opacity}"
       >${escapeXml(PROPOSAL_DISCLOSURE_TEXT)}</text>
     `;
   }
@@ -515,14 +585,17 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   `;
 
   const backgroundPng = await sharp(Buffer.from(svg)).png().toBuffer();
-  const logoBuffer = await loadLogoBuffer();
+  const logoWidth = Math.round(LOGO_WIDTH * LOGO_EMPHASIS_SCALE[spec.logoEmphasis]);
+  const logoBuffer = await loadLogoBuffer(logoWidth);
 
   const composites: Array<{ input: Buffer; top: number; left: number }> = [{ input: logoBuffer, top: logoY, left: MARGIN_X }];
   if (usesProductLayout && screenshotCard) {
     composites.push({ input: screenshotCard.buffer, top: screenshotTop, left: screenshotLeft });
   }
   if (usesProposalLayout && proposalStack) {
-    composites.push({ input: proposalStack.page2.buffer, top: proposalStack.page2Y, left: proposalStack.page2X });
+    if (proposalStack.page2) {
+      composites.push({ input: proposalStack.page2.buffer, top: proposalStack.page2Y, left: proposalStack.page2X });
+    }
     composites.push({ input: proposalStack.page1.buffer, top: proposalStack.page1Y, left: proposalStack.page1X });
   }
 
@@ -535,6 +608,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     provenance: {
       renderer: usesProposalLayout ? "svg-sharp-proposal-v1" : usesProductLayout ? "svg-sharp-product-v1" : "svg-sharp-v1",
       theme: themeForVersion(input.assetVersion),
+      renderSpec: spec,
       logoFile: LOGO_FILE,
       headline: { source: "draft.hook", fontSize: headlineWrap.fontSize, lines: headlineWrap.lines.length },
       cta: { source: "draft.cta_text", fontSize: ctaFontSize },

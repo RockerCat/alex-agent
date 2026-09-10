@@ -104,3 +104,52 @@ export const executorOutputSchema = z.object({
     .nullable(),
 });
 export type ExecutorOutput = z.infer<typeof executorOutputSchema>;
+
+// ---------------------------------------------------------------------
+// Asset feedback interpreter structured output
+// ---------------------------------------------------------------------
+//
+// Bounded rendering controls the current deterministic image_post
+// renderer (lib/agent/assetRenderer.ts) knows how to safely execute.
+// Deliberately NOT a generic layout/design schema: every field is an
+// enum over a handful of preset, renderer-owned values — no free-form
+// coordinates, colors, font sizes, file paths, or text. This is what
+// keeps "interpret Alex's visual feedback" from ever becoming a
+// backdoor for arbitrary code/markup generation or a Product Truth
+// change: the model can only ever choose among these fixed values, it
+// cannot emit anything else.
+export const PRIMARY_VISUAL_SCALES = ["normal", "large", "dominant"] as const;
+export const CTA_EMPHASIS_LEVELS = ["subtle", "normal", "strong"] as const;
+export const LOGO_EMPHASIS_LEVELS = ["subtle", "normal", "strong"] as const;
+export const SECONDARY_PAGE_VISIBILITY_LEVELS = ["hidden", "subtle", "normal"] as const;
+// No "hidden" option here on purpose: the illustrative-example
+// disclosure on a proposal-example composition is a safety-mandated
+// element (see lib/agent/proposalExamples.ts's requiresFictitiousLabel)
+// and feedback must never be able to remove it, only make it more or
+// less visually prominent.
+export const DISCLOSURE_EMPHASIS_LEVELS = ["subtle", "normal"] as const;
+
+export const assetRenderSpecSchema = z.object({
+  /** Size of the primary visual element (product screenshot card / proposal document stack). Ignored for the text-only composition, which has no primary visual to scale. */
+  primaryVisualScale: z.enum(PRIMARY_VISUAL_SCALES),
+  /** Size/boldness of the CTA pill. */
+  ctaEmphasis: z.enum(CTA_EMPHASIS_LEVELS),
+  /** Size of the official logo. */
+  logoEmphasis: z.enum(LOGO_EMPHASIS_LEVELS),
+  /** How much of the second (peeking) proposal page is shown. Only applies to the proposal-example composition. */
+  secondaryPageVisibility: z.enum(SECONDARY_PAGE_VISIBILITY_LEVELS),
+  /** Visual prominence of the mandatory "illustrative example" disclosure line. Only applies to the proposal-example composition; never hidden. */
+  disclosureEmphasis: z.enum(DISCLOSURE_EMPHASIS_LEVELS),
+});
+export type AssetRenderSpec = z.infer<typeof assetRenderSpecSchema>;
+
+// Reproduces today's renderer output exactly — every existing caller
+// that does not pass a spec (or passes this one) gets byte-identical
+// behavior to before this feature existed.
+export const DEFAULT_RENDER_SPEC: AssetRenderSpec = {
+  primaryVisualScale: "normal",
+  ctaEmphasis: "normal",
+  logoEmphasis: "normal",
+  secondaryPageVisibility: "normal",
+  disclosureEmphasis: "normal",
+};

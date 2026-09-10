@@ -2,7 +2,14 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import type { ReasoningEffort } from "openai/resources/shared";
 import { env } from "@/lib/env";
-import { plannerOutputSchema, executorOutputSchema, type PlannerOutput, type ExecutorOutput } from "@/lib/agent/schemas";
+import {
+  plannerOutputSchema,
+  executorOutputSchema,
+  assetRenderSpecSchema,
+  type PlannerOutput,
+  type ExecutorOutput,
+  type AssetRenderSpec,
+} from "@/lib/agent/schemas";
 import type { UsageTokens } from "@/lib/agent/pricing";
 
 export interface PlannerCallInput {
@@ -11,6 +18,11 @@ export interface PlannerCallInput {
 }
 
 export interface ExecutorCallInput {
+  systemPrompt: string;
+  userPrompt: string;
+}
+
+export interface AssetFeedbackCallInput {
   systemPrompt: string;
   userPrompt: string;
 }
@@ -41,6 +53,21 @@ export interface ExecutorCallResult {
 }
 
 /**
+ * Same incomplete/output-optional shape as ExecutorCallResult, for the
+ * same reason — even though assetRenderSpecSchema has no string fields
+ * that truncation could corrupt (every field is a bounded enum), the
+ * Responses API's own `status: "incomplete"` signal is still checked
+ * rather than trusted-by-omission, consistent with how every other
+ * structured-output call in this codebase treats that signal.
+ */
+export interface AssetFeedbackCallResult {
+  output?: AssetRenderSpec;
+  usage: UsageTokens;
+  model: string;
+  incomplete?: { reason: string };
+}
+
+/**
  * Thin seam between the agent runtime and the model provider. Production
  * code uses OpenAiClient; tests inject a scripted fake so Planner/Executor
  * business logic (preflight, validation, budget, product truth, revision
@@ -50,6 +77,7 @@ export interface ExecutorCallResult {
 export interface AiClient {
   runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>>;
   runExecutor(input: ExecutorCallInput): Promise<ExecutorCallResult>;
+  runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult>;
 }
 
 // Generous headroom above what EXECUTOR_TEXT_LIMITS (lib/agent/schemas.ts)
@@ -60,6 +88,11 @@ export interface AiClient {
 // approxMaxOutputTokens for that pessimistic reservation) — this is
 // strictly an upper bound sent to the API.
 const EXECUTOR_MAX_OUTPUT_TOKENS = 4000;
+
+// The asset feedback interpreter's entire output is five short enum
+// values — a small cap is both cheaper and a stronger structural
+// signal that nothing beyond the bounded schema was ever expected.
+const ASSET_FEEDBACK_MAX_OUTPUT_TOKENS = 300;
 
 function usageFromResponse(
   usage:
@@ -155,6 +188,44 @@ export class OpenAiClient implements AiClient {
     const parsed = response.output_parsed;
     if (!parsed) {
       throw new Error("Executor response did not contain parsed structured output");
+    }
+
+    return {
+      output: parsed,
+      usage,
+      model,
+    };
+  }
+
+  async runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult> {
+    // Deliberately the same executor model/configuration as runExecutor
+    // (spec: narrow execution/interpretation task, no reasoning effort,
+    // does not warrant the Planner model) — just a different, much
+    // smaller, fully-bounded output schema.
+    const model = env.executorModel();
+    const response = await this.client.responses.parse({
+      model,
+      max_output_tokens: ASSET_FEEDBACK_MAX_OUTPUT_TOKENS,
+      input: [
+        { role: "system", content: input.systemPrompt },
+        { role: "user", content: input.userPrompt },
+      ],
+      text: { format: zodTextFormat(assetRenderSpecSchema, "asset_render_spec") },
+    });
+
+    const usage = usageFromResponse(response.usage);
+
+    if (response.status === "incomplete") {
+      return {
+        usage,
+        model,
+        incomplete: { reason: response.incomplete_details?.reason ?? "unknown" },
+      };
+    }
+
+    const parsed = response.output_parsed;
+    if (!parsed) {
+      throw new Error("Asset feedback interpreter response did not contain parsed structured output");
     }
 
     return {

@@ -1,5 +1,13 @@
-import type { AiClient, PlannerCallInput, ExecutorCallInput, AiCallResult, ExecutorCallResult } from "@/lib/agent/aiClient";
-import { EXECUTOR_TEXT_LIMITS, type PlannerOutput, type ExecutorOutput } from "@/lib/agent/schemas";
+import type {
+  AiClient,
+  PlannerCallInput,
+  ExecutorCallInput,
+  AiCallResult,
+  ExecutorCallResult,
+  AssetFeedbackCallInput,
+  AssetFeedbackCallResult,
+} from "@/lib/agent/aiClient";
+import { EXECUTOR_TEXT_LIMITS, DEFAULT_RENDER_SPEC, type PlannerOutput, type ExecutorOutput, type AssetRenderSpec } from "@/lib/agent/schemas";
 
 /**
  * Scripted stand-in for the OpenAI-backed AiClient. Tests queue up
@@ -10,6 +18,7 @@ import { EXECUTOR_TEXT_LIMITS, type PlannerOutput, type ExecutorOutput } from "@
 export class ScriptedAiClient implements AiClient {
   plannerCalls: PlannerCallInput[] = [];
   executorCalls: ExecutorCallInput[] = [];
+  assetFeedbackCalls: AssetFeedbackCallInput[] = [];
 
   /**
    * When > 0, the next runExecutor call throws instead of returning a
@@ -18,6 +27,9 @@ export class ScriptedAiClient implements AiClient {
    * Decrements on each throw.
    */
   failNextExecutorCalls = 0;
+
+  /** Same as failNextExecutorCalls, for runAssetFeedbackInterpreter. */
+  failNextAssetFeedbackCalls = 0;
 
   /**
    * FIFO queue of "this call's Responses API response was incomplete"
@@ -29,9 +41,13 @@ export class ScriptedAiClient implements AiClient {
    */
   incompleteExecutorReasons: string[] = [];
 
+  /** Same as incompleteExecutorReasons, for runAssetFeedbackInterpreter. */
+  incompleteAssetFeedbackReasons: string[] = [];
+
   constructor(
     private plannerQueue: PlannerOutput[] = [],
-    private executorQueue: ExecutorOutput[] = []
+    private executorQueue: ExecutorOutput[] = [],
+    private assetFeedbackQueue: AssetRenderSpec[] = [DEFAULT_RENDER_SPEC]
   ) {}
 
   async runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>> {
@@ -55,6 +71,23 @@ export class ScriptedAiClient implements AiClient {
     }
     const output = this.executorQueue.length > 1 ? this.executorQueue.shift()! : this.executorQueue[0];
     if (!output) throw new Error("ScriptedAiClient: no executor output queued");
+    return { output, usage, model };
+  }
+
+  async runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult> {
+    this.assetFeedbackCalls.push(input);
+    if (this.failNextAssetFeedbackCalls > 0) {
+      this.failNextAssetFeedbackCalls -= 1;
+      throw new Error("Simulated technical failure calling the asset feedback interpreter.");
+    }
+    const usage = { inputTokens: 300, cachedInputTokens: 0, outputTokens: 40 };
+    const model = "test-executor-model";
+    if (this.incompleteAssetFeedbackReasons.length > 0) {
+      const reason = this.incompleteAssetFeedbackReasons.shift()!;
+      return { usage, model, incomplete: { reason } };
+    }
+    const output = this.assetFeedbackQueue.length > 1 ? this.assetFeedbackQueue.shift()! : this.assetFeedbackQueue[0];
+    if (!output) throw new Error("ScriptedAiClient: no asset feedback output queued");
     return { output, usage, model };
   }
 }

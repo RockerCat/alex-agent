@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { generateAssetAction, approveAssetAction } from "@/app/actions";
+import { generateAssetAction, approveAssetAction, requestAssetChangesAction } from "@/app/actions";
 import type { ContentAssetRow } from "@/lib/types/database";
 
 const STATUS_LABEL: Record<ContentAssetRow["status"], string> = {
@@ -31,6 +31,8 @@ export function AssetPanel({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+  const [feedback, setFeedback] = useState("");
 
   function generate() {
     setError(null);
@@ -59,6 +61,26 @@ export function AssetPanel({
         router.refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not approve the asset.");
+      }
+    });
+  }
+
+  function requestChanges() {
+    const trimmed = feedback.trim();
+    if (!trimmed) return;
+    setError(null);
+    startTransition(async () => {
+      try {
+        const result = await requestAssetChangesAction(draftId, trimmed);
+        if (result.status !== "success") {
+          setError(result.message ?? "Could not create a revision from that feedback.");
+        } else {
+          setShowFeedbackForm(false);
+          setFeedback("");
+        }
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not create a revision from that feedback.");
       }
     });
   }
@@ -125,6 +147,17 @@ export function AssetPanel({
                 Approve Asset
               </button>
             )}
+            {(asset.status === "pending_review" || asset.status === "ready_to_publish") && (
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() => setShowFeedbackForm((v) => !v)}
+                className="rounded-md border px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                style={{ borderColor: "var(--border)" }}
+              >
+                Request Changes
+              </button>
+            )}
             <button
               type="button"
               disabled={isPending}
@@ -135,6 +168,29 @@ export function AssetPanel({
               {isPending ? "Regenerating…" : "Regenerate"}
             </button>
           </div>
+
+          {showFeedbackForm && (asset.status === "pending_review" || asset.status === "ready_to_publish") && (
+            <div className="rounded-md border p-3 space-y-2" style={{ borderColor: "var(--border)" }}>
+              <label className="text-sm font-medium block">What should change visually?</label>
+              <textarea
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                rows={3}
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                style={{ borderColor: "var(--border)", background: "var(--background)" }}
+                placeholder="Ej: Haz la propuesta un poco más grande y reduce el protagonismo del CTA."
+              />
+              <button
+                type="button"
+                disabled={isPending || !feedback.trim()}
+                onClick={requestChanges}
+                className="rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                style={{ background: "var(--accent)", color: "#0f172a" }}
+              >
+                {isPending ? "Generating revision…" : "Generate Revision"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

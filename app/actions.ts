@@ -9,6 +9,7 @@ import { approveDraft, rejectDraft } from "@/lib/agent/approvals";
 import { requestRevision } from "@/lib/agent/revision";
 import { answerQuestion } from "@/lib/agent/questions";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
+import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import type { FeedbackCategory } from "@/lib/agent/constants";
 
@@ -92,6 +93,20 @@ export async function approveAssetAction(assetId: string, draftId: string) {
   await assertAuthorized();
   const db = supabaseAdmin();
   const result = await approveAsset(db, assetId);
+  revalidatePath(`/approvals/${draftId}`);
+  return result;
+}
+
+// Manual-only, same posture as generateAssetAction: exists solely so
+// Alex can explicitly submit free-text visual feedback ("Request
+// Changes") on the current image_post asset. Never invoked from
+// runMarketingCycleAction or approveDraftAction.
+export async function requestAssetChangesAction(draftId: string, feedback: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const storage = new SupabaseAssetStorage(db);
+  const aiClient = new OpenAiClient();
+  const result = await requestAssetChanges({ db, storage, aiClient, draftId, feedback });
   revalidatePath(`/approvals/${draftId}`);
   return result;
 }
