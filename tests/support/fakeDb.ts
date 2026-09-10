@@ -32,6 +32,10 @@ function checkUniqueConstraints(table: string, candidate: Row, existing: Row[]):
     const clash = existing.some((r) => r.brand === candidate.brand && r.status === "active");
     if (clash) return `duplicate key value violates unique constraint "marketing_plans_one_active_per_brand"`;
   }
+  if (table === "content_assets") {
+    const clash = existing.some((r) => r.draft_id === candidate.draft_id && r.asset_version === candidate.asset_version);
+    if (clash) return `duplicate key value violates unique constraint "content_assets_draft_id_asset_version_key"`;
+  }
   return null;
 }
 
@@ -43,6 +47,18 @@ function defaultsForTable(table: string): Row {
       return { blocked_on_question_id: null, approved_at: null, rejected_at: null, updated_at: nowIso() };
     case "agent_questions":
       return { answer: null, answered_at: null, context_run_id: null, context_plan_id: null, context_draft_id: null, blocks_progress: true };
+    case "content_assets":
+      return {
+        format: "image_post",
+        width: null,
+        height: null,
+        mime_type: "image/png",
+        storage_bucket: null,
+        storage_path: null,
+        render_provenance: {},
+        error_message: null,
+        approved_at: null,
+      };
     default:
       return {};
   }

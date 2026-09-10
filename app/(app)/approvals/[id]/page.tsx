@@ -2,6 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { DraftActions } from "@/components/DraftActions";
+import { AssetPanel } from "@/components/AssetPanel";
+import { listAssets } from "@/lib/agent/assetGenerator";
+import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +34,14 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
     : { data: null };
 
   const slides = (draft.body as { slides?: { slide: number; text: string }[] })?.slides ?? [];
+
+  const assetEligible = draft.status === "approved" && draft.content_type === "image_post";
+  const assets = assetEligible ? await listAssets(db, draft.id) : [];
+  const latestAsset = assets[0] ?? null;
+  const previewUrl =
+    latestAsset?.storage_path
+      ? await new SupabaseAssetStorage(db).createSignedUrl(latestAsset.storage_path, 3600)
+      : null;
 
   return (
     <div className="space-y-4">
@@ -121,6 +132,13 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
         <h2 className="font-medium mb-3">Review</h2>
         <DraftActions draftId={draft.id} canAct={draft.status === "pending_approval"} />
       </Card>
+
+      {assetEligible && (
+        <Card>
+          <h2 className="font-medium mb-3">Asset (image post)</h2>
+          <AssetPanel draftId={draft.id} asset={latestAsset} previewUrl={previewUrl} history={assets.slice(1)} />
+        </Card>
+      )}
 
       {revisions && revisions.length > 1 && (
         <Card>

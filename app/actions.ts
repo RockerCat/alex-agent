@@ -8,6 +8,8 @@ import { runMarketingCycle } from "@/lib/agent/runtime";
 import { approveDraft, rejectDraft } from "@/lib/agent/approvals";
 import { requestRevision } from "@/lib/agent/revision";
 import { answerQuestion } from "@/lib/agent/questions";
+import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
+import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import type { FeedbackCategory } from "@/lib/agent/constants";
 
 async function assertAuthorized() {
@@ -69,6 +71,28 @@ export async function answerQuestionAction(questionId: string, answer: string) {
   revalidatePath("/questions");
   revalidatePath("/approvals");
   revalidatePath("/dashboard");
+  return result;
+}
+
+// Manual-only: this action exists solely so Alex can explicitly click
+// "Generate Asset" / "Regenerate" on an eligible approved image_post.
+// It is never invoked from runMarketingCycleAction or
+// approveDraftAction above — see tests/assetGenerator.test.ts's
+// "no automatic generation" suite for the enforced guarantee.
+export async function generateAssetAction(draftId: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const storage = new SupabaseAssetStorage(db);
+  const result = await generateAsset({ db, storage, draftId });
+  revalidatePath(`/approvals/${draftId}`);
+  return result;
+}
+
+export async function approveAssetAction(assetId: string, draftId: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const result = await approveAsset(db, assetId);
+  revalidatePath(`/approvals/${draftId}`);
   return result;
 }
 

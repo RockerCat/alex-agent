@@ -27,6 +27,7 @@ async function main() {
     "agent_runs",
     "agent_settings",
     "ai_usage",
+    "content_assets",
     "content_drafts",
     "content_revisions",
     "marketing_plans",
@@ -78,6 +79,35 @@ async function main() {
   const settingsRow = await db.query("select * from agent_settings;");
   if (settingsRow.rows.length !== 1) throw new Error("Expected exactly one agent_settings row");
   console.log("OK: agent_settings singleton row present:", JSON.stringify(settingsRow.rows[0]));
+
+  // Exercise the content_assets (draft_id, asset_version) unique index —
+  // the actual concurrency guarantee for asset generation.
+  const plan = await db.query("select id from marketing_plans limit 1;");
+  const draft = await db.query(
+    `insert into content_drafts (
+       plan_id, brand, channel, content_type, purpose, topic, audience, cta, target_date, status, version
+     ) values ($1, 'solardesk', 'instagram', 'image_post', 'p', 't', 'a', 'c', '2026-09-10', 'approved', 1)
+     returning id;`,
+    [plan.rows[0].id]
+  );
+  const draftId = draft.rows[0].id;
+  await db.query(
+    `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status)
+     values ($1, 'solardesk', 1, 1, 'pending_review');`,
+    [draftId]
+  );
+  let assetVersionBlocked = false;
+  try {
+    await db.query(
+      `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status)
+       values ($1, 'solardesk', 1, 1, 'pending_review');`,
+      [draftId]
+    );
+  } catch (err) {
+    assetVersionBlocked = /content_assets_draft_id_asset_version_key|duplicate key/.test(String(err));
+  }
+  if (!assetVersionBlocked) throw new Error("Expected unique index to block a duplicate (draft_id, asset_version)");
+  console.log("OK: content_assets (draft_id, asset_version) unique index enforced");
 
   console.log("\nAll migration checks passed.");
   await db.close();

@@ -154,6 +154,28 @@ export type AgentQuestionRow = {
   answered_at: string | null;
 }
 
+export type AssetStatus = "pending_review" | "ready_to_publish" | "generation_failed";
+export type AssetFormat = "image_post";
+
+export type ContentAssetRow = {
+  id: string;
+  draft_id: string;
+  brand: string;
+  asset_version: number;
+  source_draft_version: number;
+  status: AssetStatus;
+  format: AssetFormat;
+  width: number | null;
+  height: number | null;
+  mime_type: string;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  render_provenance: Record<string, unknown>;
+  error_message: string | null;
+  created_at: string;
+  approved_at: string | null;
+}
+
 export type AiUsageRow = {
   id: string;
   agent_run_id: string | null;
@@ -186,6 +208,7 @@ export type Database = {
       marketing_plans: TableDef<MarketingPlanRow>;
       content_drafts: TableDef<ContentDraftRow>;
       content_revisions: TableDef<ContentRevisionRow>;
+      content_assets: TableDef<ContentAssetRow>;
       agent_questions: TableDef<AgentQuestionRow>;
       ai_usage: TableDef<AiUsageRow>;
     };

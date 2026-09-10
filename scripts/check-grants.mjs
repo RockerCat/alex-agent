@@ -32,6 +32,7 @@ async function main() {
     "agent_runs",
     "agent_settings",
     "ai_usage",
+    "content_assets",
     "content_drafts",
     "content_revisions",
     "marketing_plans",
