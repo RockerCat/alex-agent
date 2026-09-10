@@ -1,29 +1,53 @@
 import Link from "next/link";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { listDraftsForTab, type ApprovalsTab } from "@/lib/agent/approvalsListing";
 
 export const dynamic = "force-dynamic";
 
-export default async function ApprovalsPage() {
-  const db = supabaseAdmin();
-  const { data: drafts } = await db
-    .from("content_drafts")
-    .select("*")
-    .eq("brand", "solardesk")
-    .eq("status", "pending_approval")
-    .order("created_at", { ascending: true });
+const EMPTY_MESSAGE: Record<ApprovalsTab, string> = {
+  pending: "Nothing waiting for review right now.",
+  approved: "No approved content yet.",
+};
+
+export default async function ApprovalsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { tab } = await searchParams;
+  const activeTab: ApprovalsTab = tab === "approved" ? "approved" : "pending";
+
+  const drafts = await listDraftsForTab(supabaseAdmin(), activeTab);
 
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold">Approvals</h1>
         <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Drafts AlexAgent prepared for SolarDesk, awaiting your review.
+          Drafts AlexAgent prepared for SolarDesk.
         </p>
+      </div>
+
+      <div className="flex gap-1 border-b" style={{ borderColor: "var(--border)" }}>
+        {(["pending", "approved"] as const).map((t) => (
+          <Link
+            key={t}
+            href={t === "pending" ? "/approvals" : "/approvals?tab=approved"}
+            className="px-3 py-2 text-sm font-medium"
+            style={
+              activeTab === t
+                ? { borderBottom: "2px solid var(--accent)", color: "var(--foreground)" }
+                : { color: "var(--muted)" }
+            }
+          >
+            {t === "pending" ? "Pending" : "Approved"}
+          </Link>
+        ))}
       </div>
 
       {(!drafts || drafts.length === 0) && (
         <div className="rounded-lg border p-6 text-sm text-center" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-          Nothing waiting for review right now.
+          {EMPTY_MESSAGE[activeTab]}
         </div>
       )}
 
