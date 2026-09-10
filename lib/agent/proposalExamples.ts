@@ -40,7 +40,7 @@ export interface ProposalExampleMeta {
   verifiedPurpose: string;
   /** Always true for this source: the PDF contains one project's concrete example figures, never universal SolarDesk outcomes. */
   hasExampleSpecificFigures: true;
-  /** Always true: any marketing use of this source must visibly show "EJEMPLO FICTICIO". */
+  /** Always true: any marketing use of this source must visibly disclose that it is an illustrative example (see assetRenderer.ts's disclosure line). */
   requiresFictitiousLabel: true;
 }
 

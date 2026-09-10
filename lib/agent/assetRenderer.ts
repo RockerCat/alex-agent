@@ -17,10 +17,11 @@ import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/pro
 //   - proposal: same brand chrome, but with the real verified
 //     client-facing proposal example (a real PDF's rendered pages)
 //     framed as the dominant visual, chosen by
-//     lib/agent/proposalExamples.ts and marked with a mandatory
-//     "EJEMPLO FICTICIO" label. Takes precedence over the product
-//     composition when the brief asks to show the actual proposal
-//     output rather than the internal management screen.
+//     lib/agent/proposalExamples.ts, with a subtle disclosure line
+//     below it making clear the values shown are illustrative.
+//     Takes precedence over the product composition when the brief
+//     asks to show the actual proposal output rather than the
+//     internal management screen.
 // The only other variation is a deterministic function of the asset
 // version number (see THEMES below) — never random, never AI.
 
@@ -141,22 +142,21 @@ const PRODUCT_CTA_Y = 1180;
 
 // Fixed layout constants for the proposal-example composition: the
 // real proposal page(s) become the dominant visual, with a smaller
-// headline above and a mandatory "EJEMPLO FICTICIO" badge between the
-// headline and the document stack.
+// headline above, and a subtle disclosure line below the document
+// stack (not a badge) making clear it is an illustrative example.
 const PROPOSAL_LOGO_Y = 56;
 const PROPOSAL_HEADLINE_TOP_Y = 230;
 const PROPOSAL_HEADLINE_SIZES = [46, 40, 36, 32];
 const PROPOSAL_HEADLINE_MAX_LINES = 2;
-const PROPOSAL_BADGE_TOP_Y = 320;
-const PROPOSAL_BADGE_HEIGHT = 56;
-const PROPOSAL_BADGE_FONT_SIZE = 28;
-const PROPOSAL_BADGE_TEXT = "EJEMPLO FICTICIO";
-const PROPOSAL_STACK_TOP_Y = 404;
-const PROPOSAL_STACK_BOTTOM_MAX_Y = 1170;
+const PROPOSAL_STACK_TOP_Y = 330;
+const PROPOSAL_STACK_BOTTOM_MAX_Y = 1150;
 const PROPOSAL_PAGE_OFFSET = 76; // how far page 2 peeks out behind/below page 1
 const PROPOSAL_FRAME_MARGIN = 10; // white "mat" border drawn around each page
 const PROPOSAL_FRAME_RADIUS = 20;
 const PROPOSAL_PAGE_RADIUS = 12;
+const PROPOSAL_DISCLOSURE_GAP = 34; // gap between the stack's outer frame and the disclosure line
+const PROPOSAL_DISCLOSURE_FONT_SIZE = 24;
+const PROPOSAL_DISCLOSURE_TEXT = "Propuesta de ejemplo · Valores ilustrativos";
 const PROPOSAL_CTA_Y = 1250;
 
 export interface RenderAssetInput {
@@ -444,7 +444,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   }
 
   let proposalSvg = "";
-  let badgeSvg = "";
+  let disclosureSvg = "";
   if (usesProposalLayout && proposalStack) {
     const { page1, page2, page1X, page1Y, page2X, page2Y } = proposalStack;
     const m = PROPOSAL_FRAME_MARGIN;
@@ -458,21 +458,23 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
       <rect x="${page1X - m}" y="${page1Y - m}" width="${page1.width + m * 2}" height="${page1.height + m * 2}" rx="${PROPOSAL_FRAME_RADIUS}" fill="${WHITE}" />
     `;
 
-    const badgeTextWidth = PROPOSAL_BADGE_TEXT.length * PROPOSAL_BADGE_FONT_SIZE * 0.62;
-    const badgeWidth = badgeTextWidth + 72;
-    const badgeX = (IMAGE_POST_WIDTH - badgeWidth) / 2;
-    badgeSvg = `
-      <rect x="${badgeX}" y="${PROPOSAL_BADGE_TOP_Y}" width="${badgeWidth}" height="${PROPOSAL_BADGE_HEIGHT}" rx="${PROPOSAL_BADGE_HEIGHT / 2}" fill="${NAVY}" stroke="${AMBER}" stroke-width="2" />
+    // Subtle supporting text (not a badge/pill) directly below the
+    // document stack's own frame — muted so it reads as a small print
+    // disclosure belonging to the proposal, not a warning interrupting
+    // the headline -> proposal -> CTA hierarchy.
+    const stackOuterBottom = page2Y + page2.height + m;
+    const disclosureY = stackOuterBottom + PROPOSAL_DISCLOSURE_GAP;
+    disclosureSvg = `
       <text
         x="${IMAGE_POST_WIDTH / 2}"
-        y="${PROPOSAL_BADGE_TOP_Y + PROPOSAL_BADGE_HEIGHT / 2 + PROPOSAL_BADGE_FONT_SIZE * 0.32}"
+        y="${disclosureY}"
         text-anchor="middle"
         font-family="${FONT_STACK}"
-        font-weight="bold"
-        font-size="${PROPOSAL_BADGE_FONT_SIZE}"
-        letter-spacing="2"
-        fill="${AMBER}"
-      >${escapeXml(PROPOSAL_BADGE_TEXT)}</text>
+        font-weight="normal"
+        font-size="${PROPOSAL_DISCLOSURE_FONT_SIZE}"
+        fill="${WHITE}"
+        fill-opacity="0.62"
+      >${escapeXml(PROPOSAL_DISCLOSURE_TEXT)}</text>
     `;
   }
 
@@ -491,7 +493,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
       >${headlineLinesSvg}</text>
       ${cardSvg}
       ${proposalSvg}
-      ${badgeSvg}
+      ${disclosureSvg}
       <rect
         x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
         y="${ctaY - ctaPillHeight / 2}"
@@ -549,7 +551,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
             selected: usesProposalLayout,
             pdfPath: proposalMeta.pdfPath,
             pages: proposalMeta.pages.map((p) => `${PROPOSAL_RENDERED_DIR}/${p.file}`),
-            fictitiousLabel: PROPOSAL_BADGE_TEXT,
+            disclosureText: PROPOSAL_DISCLOSURE_TEXT,
           }
         : { selected: false },
     },

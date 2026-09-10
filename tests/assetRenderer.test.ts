@@ -299,11 +299,17 @@ describe("renderImagePostAsset — proposal-example composition", () => {
     expect(Buffer.compare(withProposal.png, textOnly.png)).not.toBe(0);
   });
 
-  it("8. the mandatory EJEMPLO FICTICIO label is recorded as present in the proposal composition", async () => {
+  it("8. the mandatory illustrative-example disclosure is recorded as present in the proposal composition", async () => {
     const result = await renderImagePostAsset(proposalOutputInput);
-    const proposal = result.provenance.proposalExample as { selected: boolean; fictitiousLabel: string };
+    const proposal = result.provenance.proposalExample as { selected: boolean; disclosureText: string };
     expect(proposal.selected).toBe(true);
-    expect(proposal.fictitiousLabel).toBe("EJEMPLO FICTICIO");
+    // Wording changed from the earlier "EJEMPLO FICTICIO" warning-style
+    // badge to a subtle supporting disclosure, but the underlying
+    // safety requirement is unchanged: it must still say the proposal
+    // is an example and its values are illustrative, not typical/real.
+    expect(proposal.disclosureText).toBe("Propuesta de ejemplo · Valores ilustrativos");
+    expect(proposal.disclosureText.toLowerCase()).toContain("ejemplo");
+    expect(proposal.disclosureText.toLowerCase()).toContain("ilustrativ");
   });
 
   it("9. output remains a PNG at 1080x1350 for the proposal composition", async () => {
