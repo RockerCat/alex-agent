@@ -83,6 +83,9 @@ export async function generateAsset(params: {
       headline: draft.hook,
       ctaText: draft.cta_text,
       assetVersion: nextVersion,
+      visualDirection: draft.visual_direction ?? "",
+      purpose: draft.purpose,
+      topic: draft.topic,
     });
   } catch (err) {
     const message = err instanceof AssetRenderError ? err.message : `Unexpected render error: ${err instanceof Error ? err.message : String(err)}`;
