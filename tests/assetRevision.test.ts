@@ -3,7 +3,8 @@ import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { createFakeDb, asSupabaseClient } from "@/tests/support/fakeDb";
 import { FakeAssetStorage } from "@/tests/support/fakeAssetStorage";
-import { ScriptedAiClient, feedbackInterpretation } from "@/tests/support/fakeAiClient";
+import { ScriptedAiClient, feedbackInterpretation, visualPlan } from "@/tests/support/fakeAiClient";
+import { ScriptedImageGenerationClient } from "@/tests/support/fakeImageGenerationClient";
 import { seedDefaultSettings } from "@/tests/support/seed";
 import { DEFAULT_RENDER_SPEC, type AssetRenderSpec } from "@/lib/agent/schemas";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -584,5 +585,81 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
 
     expect(outcome.status).toBe("ineligible");
     expect(aiClient.assetFeedbackCalls).toHaveLength(0);
+  });
+});
+
+// AlexAgent v0.2 — Visual Director compatibility (spec section 16):
+// Request Changes must keep working unchanged for assets produced by
+// the Visual Director, operating from the asset's actual persisted
+// strategy rather than re-deriving one from keywords, and must never
+// re-run the Visual Director or call the image-generation provider
+// itself.
+describe("requestAssetChanges — Visual Director compatibility", () => {
+  it("a Request Changes revision on a Visual-Director-driven product_ui asset keeps that strategy and applies the renderSpec change", async () => {
+    const { fake, db, storage } = setup();
+    seedDraft(fake, "draft-1", {
+      visual_direction: "Mockup B2B SaaS mostrando la experiencia de propuestas de SolarDesk.",
+      topic: "Gestiona tus propuestas solares",
+    });
+    const directorClient = new ScriptedAiClient([], [], [], [visualPlan({ strategy: "product_ui", verifiedSourceCategory: "product_screenshot" })]);
+    const generated = await generateAsset({ db, storage, draftId: "draft-1", aiClient: directorClient });
+    expect(((generated.asset!.render_provenance as Record<string, unknown>).visualPlan as { strategy: string }).strategy).toBe("product_ui");
+
+    const feedbackClient = new ScriptedAiClient([], [], [feedbackInterpretation({ ...DEFAULT_RENDER_SPEC, logoEmphasis: "strong" })]);
+    const outcome = await requestAssetChanges({ db, storage, aiClient: feedbackClient, draftId: "draft-1", feedback: "Haz el logo más visible." });
+
+    expect(outcome.status).toBe("success");
+    const provenance = outcome.asset!.render_provenance as Record<string, unknown>;
+    expect((provenance.visualPlan as { strategy: string }).strategy).toBe("product_ui");
+    expect((provenance.screenshot as { selected: boolean; file: string }).file).toBe("04.png");
+    expect(((provenance.renderSpec as Record<string, unknown>).logoEmphasis)).toBe("strong");
+    // Never re-runs the Visual Director — only the bounded feedback interpreter call.
+    expect(directorClient.visualDirectorCalls).toHaveLength(1);
+  });
+
+  it("a Request Changes revision on a hybrid/generative asset reuses the cached generated image — never calls the image provider", async () => {
+    const { fake, db, storage } = setup();
+    seedDraft(fake, "draft-1");
+    process.env.OPENAI_IMAGE_MODEL = "gpt-image-1";
+    try {
+      const directorClient = new ScriptedAiClient(
+        [],
+        [],
+        [],
+        [visualPlan({ strategy: "generated_photo", generativeSceneDescription: "Escena solar profesional." })]
+      );
+      const generated = await generateAsset({
+        db,
+        storage,
+        draftId: "draft-1",
+        aiClient: directorClient,
+        imageGenerationClient: new ScriptedImageGenerationClient(),
+      });
+      expect(generated.status).toBe("success");
+
+      const feedbackClient = new ScriptedAiClient([], [], [feedbackInterpretation({ ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" })]);
+      const outcome = await requestAssetChanges({ db, storage, aiClient: feedbackClient, draftId: "draft-1", feedback: "Haz el CTA más fuerte." });
+
+      expect(outcome.status).toBe("success");
+      const provenance = outcome.asset!.render_provenance as Record<string, unknown>;
+      expect((provenance.visualPlan as { strategy: string }).strategy).toBe("generated_photo");
+      expect((provenance.visualPlan as { generatedImage: { reused: boolean } }).generatedImage.reused).toBe(true);
+      expect(provenance.renderer).toBe("svg-sharp-hero-v1");
+    } finally {
+      delete process.env.OPENAI_IMAGE_MODEL;
+    }
+  });
+
+  it("a legacy asset with no persisted visualPlan (pre-Visual-Director) still revises correctly via the deterministic keyword fallback", async () => {
+    const { fake, db, storage } = setup();
+    seedDraft(fake, "draft-1"); // generateAsset({db,storage,draftId}) with no aiClient never persists a visualPlan-less legacy shape — this exercises the same fallback path getEffectiveVisualPlan returns null for.
+    await generateAsset({ db, storage, draftId: "draft-1" });
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
+
+    const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
+
+    expect(outcome.status).toBe("success");
+    const spec = (outcome.asset!.render_provenance as Record<string, unknown>).renderSpec as AssetRenderSpec;
+    expect(spec.primaryVisualScale).toBe("large");
   });
 });

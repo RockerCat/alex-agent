@@ -6,6 +6,8 @@ import type {
   ExecutorCallResult,
   AssetFeedbackCallInput,
   AssetFeedbackCallResult,
+  VisualDirectorCallInput,
+  VisualDirectorCallResult,
 } from "@/lib/agent/aiClient";
 import {
   EXECUTOR_TEXT_LIMITS,
@@ -14,6 +16,7 @@ import {
   type ExecutorOutput,
   type AssetRenderSpec,
   type AssetFeedbackInterpretation,
+  type VisualCreativePlan,
 } from "@/lib/agent/schemas";
 
 /**
@@ -26,6 +29,7 @@ export class ScriptedAiClient implements AiClient {
   plannerCalls: PlannerCallInput[] = [];
   executorCalls: ExecutorCallInput[] = [];
   assetFeedbackCalls: AssetFeedbackCallInput[] = [];
+  visualDirectorCalls: VisualDirectorCallInput[] = [];
 
   /**
    * When > 0, the next runExecutor call throws instead of returning a
@@ -51,12 +55,18 @@ export class ScriptedAiClient implements AiClient {
   /** Same as incompleteExecutorReasons, for runAssetFeedbackInterpreter. */
   incompleteAssetFeedbackReasons: string[] = [];
 
+  /** Same as failNextExecutorCalls, for runVisualDirector. */
+  failNextVisualDirectorCalls = 0;
+  /** Same as incompleteExecutorReasons, for runVisualDirector. */
+  incompleteVisualDirectorReasons: string[] = [];
+
   constructor(
     private plannerQueue: PlannerOutput[] = [],
     private executorQueue: ExecutorOutput[] = [],
     private assetFeedbackQueue: AssetFeedbackInterpretation[] = [
       { renderSpec: DEFAULT_RENDER_SPEC, appliedChanges: [], unsupportedRequests: [] },
-    ]
+    ],
+    private visualDirectorQueue: VisualCreativePlan[] = [defaultVisualPlan()]
   ) {}
 
   async runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>> {
@@ -99,6 +109,42 @@ export class ScriptedAiClient implements AiClient {
     if (!output) throw new Error("ScriptedAiClient: no asset feedback output queued");
     return { output, usage, model };
   }
+
+  async runVisualDirector(input: VisualDirectorCallInput): Promise<VisualDirectorCallResult> {
+    this.visualDirectorCalls.push(input);
+    if (this.failNextVisualDirectorCalls > 0) {
+      this.failNextVisualDirectorCalls -= 1;
+      throw new Error("Simulated technical failure calling the Visual Director.");
+    }
+    const usage = { inputTokens: 500, cachedInputTokens: 0, outputTokens: 200 };
+    const model = "test-executor-model";
+    if (this.incompleteVisualDirectorReasons.length > 0) {
+      const reason = this.incompleteVisualDirectorReasons.shift()!;
+      return { usage, model, incomplete: { reason } };
+    }
+    const output = this.visualDirectorQueue.length > 1 ? this.visualDirectorQueue.shift()! : this.visualDirectorQueue[0];
+    if (!output) throw new Error("ScriptedAiClient: no visual director output queued");
+    return { output, usage, model };
+  }
+}
+
+/** Test convenience: a valid, minimal VisualCreativePlan with sensible defaults, overridable per field. */
+export function visualPlan(overrides: Partial<VisualCreativePlan> = {}): VisualCreativePlan {
+  return {
+    strategy: "branded_graphic",
+    creativeConcept: "Composición de marca con titular y CTA, sin imagen de producto ni propuesta.",
+    communicationGoal: "Comunicar la idea central del post de forma clara y directa.",
+    verifiedSourceCategory: "none",
+    generativeSceneDescription: null,
+    compositionIntent: "graphic_text_dominant",
+    renderSpec: DEFAULT_RENDER_SPEC,
+    rationale: "El tema es conceptual/educativo, no una demostración de producto ni de la propuesta.",
+    ...overrides,
+  };
+}
+
+function defaultVisualPlan(): VisualCreativePlan {
+  return visualPlan();
 }
 
 /**

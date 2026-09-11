@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import sharp from "sharp";
 import { readFile } from "node:fs/promises";
 import { renderImagePostAsset, AssetRenderError, IMAGE_POST_WIDTH, IMAGE_POST_HEIGHT } from "@/lib/agent/assetRenderer";
+import { getScreenshotMeta } from "@/lib/agent/productScreenshots";
+import { PROPOSAL_EXAMPLE } from "@/lib/agent/proposalExamples";
+import { tinyPngBuffer } from "@/tests/support/fakeImageGenerationClient";
 
 // Live QA gap: v1 of the SolarDesk image_post asset technically executed
 // (correct logo/colors/headline/CTA) but visual review rejected it — the
@@ -367,5 +370,135 @@ describe("renderImagePostAsset — proposal-example composition", () => {
     const result = await renderImagePostAsset(managementInput);
     expect(result.width).toBe(IMAGE_POST_WIDTH);
     expect(result.height).toBe(IMAGE_POST_HEIGHT);
+  });
+});
+
+// AlexAgent v0.2 — Visual Director integration. All new, additive
+// input fields (strategy/forceScreenshotMeta/forceProposalMeta/
+// generatedImage) — the two describe blocks above never pass any of
+// them and therefore exercise the exact preserved legacy behavior.
+describe("renderImagePostAsset — hero composition (generated_photo/generated_illustration/hybrid)", () => {
+  const heroInput = {
+    headline: "Explicar los supuestos también es parte de la propuesta",
+    ctaText: "Comenzar gratis",
+    assetVersion: 1,
+    generatedImage: tinyPngBuffer(),
+  };
+
+  it("1. generated_photo produces a 1080x1350 PNG using the provided generated image", async () => {
+    const result = await renderImagePostAsset({ ...heroInput, strategy: "generated_photo" });
+    expect(result.width).toBe(IMAGE_POST_WIDTH);
+    expect(result.height).toBe(IMAGE_POST_HEIGHT);
+    const meta = await sharp(result.png).metadata();
+    expect(meta.format).toBe("png");
+    expect(result.provenance.renderer).toBe("svg-sharp-hero-v1");
+  });
+
+  it("2. generated_illustration also renders via the hero composition", async () => {
+    const result = await renderImagePostAsset({ ...heroInput, strategy: "generated_illustration" });
+    expect(result.provenance.renderer).toBe("svg-sharp-hero-v1");
+  });
+
+  it("3. the official logo is still composited in the hero composition", async () => {
+    const result = await renderImagePostAsset({ ...heroInput, strategy: "generated_photo" });
+    expect(result.provenance.logoFile).toBe("brands/solardesk/assets/logos/logo.png");
+  });
+
+  it("4. the hero composition throws AssetRenderError rather than fabricating pixels when no generated image is provided", async () => {
+    await expect(
+      renderImagePostAsset({ headline: "Titulo", ctaText: "CTA", assetVersion: 1, strategy: "generated_photo" })
+    ).rejects.toBeInstanceOf(AssetRenderError);
+  });
+
+  it("5. hybrid with a forced product screenshot insets the real screenshot — never generates UI", async () => {
+    const screenshotMeta = getScreenshotMeta("04.png")!;
+    const result = await renderImagePostAsset({
+      ...heroInput,
+      strategy: "hybrid",
+      forceScreenshotMeta: screenshotMeta,
+    });
+    const screenshot = result.provenance.screenshot as { selected: boolean; file: string; source: string };
+    expect(screenshot.selected).toBe(true);
+    expect(screenshot.file).toBe("04.png");
+    expect(screenshot.source).toBe("brands/solardesk/assets/product-screenshots");
+  });
+
+  it("6. hybrid with a forced proposal example insets the real proposal page and still shows the mandatory disclosure", async () => {
+    const result = await renderImagePostAsset({
+      ...heroInput,
+      strategy: "hybrid",
+      forceProposalMeta: PROPOSAL_EXAMPLE,
+    });
+    const proposal = result.provenance.proposalExample as { selected: boolean; pdfPath: string; disclosureText: string };
+    expect(proposal.selected).toBe(true);
+    expect(proposal.pdfPath).toContain("proposal-examples/");
+    expect(proposal.pdfPath).not.toContain("references");
+    expect(proposal.disclosureText.toLowerCase()).toContain("ejemplo");
+  });
+
+  it("7. hybrid with neither a forced screenshot nor proposal renders as a plain hero (no inset card) rather than failing", async () => {
+    const result = await renderImagePostAsset({ ...heroInput, strategy: "hybrid" });
+    expect((result.provenance.screenshot as { selected: boolean }).selected).toBe(false);
+    expect((result.provenance.proposalExample as { selected: boolean }).selected).toBe(false);
+    expect(result.width).toBe(IMAGE_POST_WIDTH);
+  });
+
+  it("8. hero output differs from the text-only render of the same copy — the generated image is actually composited", async () => {
+    const hero = await renderImagePostAsset({ ...heroInput, strategy: "generated_photo" });
+    const textOnly = await renderImagePostAsset({ headline: heroInput.headline, ctaText: heroInput.ctaText, assetVersion: 1 });
+    expect(Buffer.compare(hero.png, textOnly.png)).not.toBe(0);
+  });
+
+  it("9. rendering never mutates the input it was given", async () => {
+    const input = { ...heroInput, strategy: "hybrid" as const };
+    const snapshot = { ...input };
+    await renderImagePostAsset(input);
+    expect(input).toEqual(snapshot);
+  });
+});
+
+describe("renderImagePostAsset — strategy/force* overrides (Visual Director path)", () => {
+  it("10. an explicit branded_graphic strategy forces text-only even when visualDirection/topic would otherwise keyword-match a proposal", async () => {
+    const result = await renderImagePostAsset({
+      headline: "Explicar los supuestos también es parte de la propuesta",
+      ctaText: "Comenzar gratis",
+      assetVersion: 1,
+      visualDirection: "Muestra la propuesta final en PDF que SolarDesk entrega al cliente, lista para presentar.",
+      purpose: "activation",
+      topic: "El resultado: una propuesta profesional para tu cliente",
+      strategy: "branded_graphic",
+    });
+    expect(result.provenance.renderer).toBe("svg-sharp-v1");
+    expect((result.provenance.proposalExample as { selected: boolean }).selected).toBe(false);
+    expect((result.provenance.screenshot as { selected: boolean }).selected).toBe(false);
+  });
+
+  it("11. an explicit forceProposalMeta is used verbatim instead of the renderer's own keyword selection", async () => {
+    const result = await renderImagePostAsset({
+      headline: "Titulo corto",
+      ctaText: "Comenzar gratis",
+      assetVersion: 1,
+      // No visualDirection/purpose/topic signal at all — the renderer's
+      // own selection would find nothing — but the forced meta is still honored.
+      strategy: "proposal_document",
+      forceProposalMeta: PROPOSAL_EXAMPLE,
+    });
+    expect(result.provenance.renderer).toBe("svg-sharp-proposal-v1");
+    expect((result.provenance.proposalExample as { selected: boolean }).selected).toBe(true);
+  });
+
+  it("12. an explicit forceScreenshotMeta of null forces no screenshot even if keywords would otherwise match one", async () => {
+    const result = await renderImagePostAsset({
+      headline: "Organiza todas tus propuestas en un solo lugar",
+      ctaText: "Comenzar gratis",
+      assetVersion: 1,
+      visualDirection: "Mockup B2B SaaS mostrando la experiencia de propuestas de SolarDesk.",
+      purpose: "activation",
+      topic: "Gestiona tus propuestas solares",
+      strategy: "product_ui",
+      forceScreenshotMeta: null,
+    });
+    expect((result.provenance.screenshot as { selected: boolean }).selected).toBe(false);
+    expect(result.provenance.renderer).toBe("svg-sharp-v1");
   });
 });

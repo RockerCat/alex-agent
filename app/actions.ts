@@ -11,6 +11,7 @@ import { answerQuestion } from "@/lib/agent/questions";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
+import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
 import type { FeedbackCategory } from "@/lib/agent/constants";
 
 async function assertAuthorized() {
@@ -80,11 +81,20 @@ export async function answerQuestionAction(questionId: string, answer: string) {
 // It is never invoked from runMarketingCycleAction or
 // approveDraftAction above — see tests/assetGenerator.test.ts's
 // "no automatic generation" suite for the enforced guarantee.
+//
+// aiClient/imageGenerationClient are always supplied here (production
+// posture): the Visual Director only runs for first-time generation
+// (generateAsset() internally treats Regenerate as always zero-AI-cost
+// regardless), and imageGenerationClient is only ever actually called
+// when OPENAI_IMAGE_MODEL is configured — see
+// lib/agent/imageGenerationClient.ts's capability gating.
 export async function generateAssetAction(draftId: string) {
   await assertAuthorized();
   const db = supabaseAdmin();
   const storage = new SupabaseAssetStorage(db);
-  const result = await generateAsset({ db, storage, draftId });
+  const aiClient = new OpenAiClient();
+  const imageGenerationClient = new OpenAiImageGenerationClient();
+  const result = await generateAsset({ db, storage, draftId, aiClient, imageGenerationClient });
   revalidatePath(`/approvals/${draftId}`);
   return result;
 }

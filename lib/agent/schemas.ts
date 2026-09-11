@@ -183,3 +183,76 @@ export const assetFeedbackInterpretationSchema = z.object({
     .max(ASSET_FEEDBACK_SUMMARY_MAX_ITEMS),
 });
 export type AssetFeedbackInterpretation = z.infer<typeof assetFeedbackInterpretationSchema>;
+
+// ---------------------------------------------------------------------
+// Visual Director — creative-direction structured output
+// ---------------------------------------------------------------------
+//
+// AlexAgent v0.2 — Visual Director. Sits BEFORE asset production:
+// decides HOW an approved draft should be communicated visually, as a
+// small bounded plan, before any pixels (deterministic or generative)
+// are produced. It never generates pixels itself and never selects a
+// specific file — only a strategy, a source CATEGORY (resolved against
+// the real catalogs in productScreenshots.ts/proposalExamples.ts by
+// application code, never trusted verbatim from the model), a bounded
+// composition intent, a reused AssetRenderSpec for emphasis/hierarchy
+// (never new text), and short capped descriptive/rationale strings. No
+// field can carry code, HTML/CSS, coordinates, colors, or a filesystem
+// path — every field is either a fixed enum or a capped-length string.
+export const VISUAL_STRATEGIES = [
+  "product_ui",
+  "proposal_document",
+  "branded_graphic",
+  "generated_photo",
+  "generated_illustration",
+  "hybrid",
+] as const;
+export type VisualStrategy = (typeof VISUAL_STRATEGIES)[number];
+
+// What kind of verified source material (if any) this plan calls for.
+// A CATEGORY only — never a specific filename/path. Application code
+// resolves the category to a concrete catalog entry (or degrades
+// safely if none is available); the model never supplies a path.
+export const VERIFIED_SOURCE_CATEGORIES = ["none", "product_screenshot", "proposal_example"] as const;
+export type VerifiedSourceCategory = (typeof VERIFIED_SOURCE_CATEGORIES)[number];
+
+export const COMPOSITION_INTENTS = [
+  "generated_dominant",
+  "verified_dominant",
+  "split_hybrid",
+  "graphic_text_dominant",
+] as const;
+export type CompositionIntent = (typeof COMPOSITION_INTENTS)[number];
+
+export const VISUAL_PLAN_TEXT_LIMITS = {
+  creativeConcept: 280,
+  communicationGoal: 240,
+  generativeSceneDescription: 500,
+  rationale: 400,
+} as const;
+
+export const visualCreativePlanSchema = z.object({
+  strategy: z.enum(VISUAL_STRATEGIES),
+  /** Short human-readable (Spanish) description of the visual idea — instructional context, not marketing copy. */
+  creativeConcept: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.creativeConcept),
+  /** What the visual should make understandable at a glance. Must be derived from the approved draft, never a new claim. */
+  communicationGoal: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.communicationGoal),
+  /** Verified-source CATEGORY only (see VERIFIED_SOURCE_CATEGORIES doc above) — never a file path. Application code decides whether/how to honor it per strategy (e.g. always "none" for branded_graphic). */
+  verifiedSourceCategory: z.enum(VERIFIED_SOURCE_CATEGORIES),
+  /**
+   * Visual scene/style/composition description for the image-generation
+   * prompt builder — required (non-null) only when strategy is
+   * generated_photo/generated_illustration/hybrid; must describe scene
+   * and style only, never factual SolarDesk claims, UI, logo, or
+   * pricing (enforced separately by lib/agent/generativePromptBuilder.ts,
+   * which builds the actual provider prompt and never passes this
+   * string to the provider unmodified).
+   */
+  generativeSceneDescription: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.generativeSceneDescription).nullable(),
+  compositionIntent: z.enum(COMPOSITION_INTENTS),
+  /** Initial fine-tuning/emphasis, reusing the exact same bounded five-field schema Request Changes already validates against — the Visual Director cannot rewrite hook/CTA/caption because this schema has no field capable of holding text at all. */
+  renderSpec: assetRenderSpecSchema,
+  /** Short explanation of why this strategy fits this specific draft. Persisted for auditability. */
+  rationale: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.rationale),
+});
+export type VisualCreativePlan = z.infer<typeof visualCreativePlanSchema>;

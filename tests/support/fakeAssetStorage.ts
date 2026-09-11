@@ -27,4 +27,12 @@ export class FakeAssetStorage implements AssetStorage {
     if (!this.files.has(path)) return null;
     return `https://fake-storage.local/${path}?signed=1`;
   }
+
+  async download(path: string): Promise<Buffer> {
+    const data = this.files.get(path);
+    if (!data) {
+      throw new AssetStorageError(`Object not found at path "${path}".`);
+    }
+    return data;
+  }
 }

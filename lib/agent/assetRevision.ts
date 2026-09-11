@@ -3,9 +3,7 @@ import type { Database, ContentAssetRow, ContentDraftRow } from "@/lib/types/dat
 import type { AiClient } from "@/lib/agent/aiClient";
 import { AssetStorageError, type AssetStorage } from "@/lib/agent/assetStorage";
 import { renderImagePostAsset, AssetRenderError } from "@/lib/agent/assetRenderer";
-import { getLatestAsset, getEffectiveRenderSpec } from "@/lib/agent/assetGenerator";
-import { selectProductScreenshot } from "@/lib/agent/productScreenshots";
-import { selectProposalExample } from "@/lib/agent/proposalExamples";
+import { getLatestAsset, resolveCachedVisualSources, buildVisualPlanProvenance, type CachedVisualSourceResolution } from "@/lib/agent/assetGenerator";
 import { BudgetGuard } from "@/lib/agent/budgetGuard";
 import {
   callAssetFeedbackInterpreter,
@@ -53,23 +51,35 @@ export interface AssetRevisionOutcome {
 const MIN_FEEDBACK_LENGTH = 3;
 const MAX_FEEDBACK_LENGTH = 500;
 
-function describeCurrentSource(draft: ContentDraftRow): { layout: AssetCompositionLayout; sourceDescription: string } {
-  const selectionInput = {
-    visualDirection: draft.visual_direction ?? "",
-    purpose: draft.purpose,
-    topic: draft.topic,
-  };
-
-  const proposal = selectProposalExample(selectionInput);
-  if (proposal) {
-    return { layout: "proposal-example", sourceDescription: proposal.verifiedPurpose };
+/**
+ * Derives the feedback interpreter's {layout, sourceDescription} context
+ * from the CURRENT asset's actual effective strategy (the Visual
+ * Director plan it was rendered with — see
+ * lib/agent/assetGenerator.ts's resolveCachedVisualSources), not from
+ * re-deriving a guess via keyword matching on the draft. This is what
+ * keeps Request Changes' context honest for assets whose strategy was a
+ * deliberate Visual Director choice that a naive keyword re-check could
+ * disagree with. AssetCompositionLayout intentionally stays a 3-value
+ * enum (spec: don't redesign Asset Feedback for this task) — generative
+ * strategies without a proposal inset map to "text-only", the closest
+ * existing category (no product/proposal imagery to describe rules
+ * around), while a proposal inset (proposal_document, or hybrid with
+ * one) still maps to "proposal-example" so the disclosure-emphasis
+ * guidance still applies correctly.
+ */
+function describeCurrentSource(resolution: CachedVisualSourceResolution): { layout: AssetCompositionLayout; sourceDescription: string } {
+  if (resolution.proposalMeta) {
+    return { layout: "proposal-example", sourceDescription: resolution.proposalMeta.verifiedPurpose };
   }
-
-  const screenshot = selectProductScreenshot(selectionInput);
-  if (screenshot) {
-    return { layout: "product-screenshot", sourceDescription: screenshot.visibleSubject };
+  if (resolution.screenshotMeta) {
+    return { layout: "product-screenshot", sourceDescription: resolution.screenshotMeta.visibleSubject };
   }
-
+  if (resolution.strategy === "generated_photo" || resolution.strategy === "generated_illustration") {
+    return {
+      layout: "text-only",
+      sourceDescription: `A generated supporting image is used as the background (concept: ${resolution.plan.creativeConcept}) — no verified product/proposal source is shown.`,
+    };
+  }
   return {
     layout: "text-only",
     sourceDescription: "No verified product/proposal visual source is selected for this draft — the composition is logo, headline and CTA only.",
@@ -126,8 +136,9 @@ async function performRevision(params: {
 }): Promise<AssetRevisionOutcome> {
   const { db, storage, aiClient, budgetGuard, agentRunId, draft, latest, feedback } = params;
 
-  const currentSpec = getEffectiveRenderSpec(latest);
-  const { layout, sourceDescription } = describeCurrentSource(draft);
+  const resolution = await resolveCachedVisualSources(storage, draft, latest);
+  const currentSpec = resolution.plan.renderSpec;
+  const { layout, sourceDescription } = describeCurrentSource(resolution);
 
   const context: AssetFeedbackContext = {
     visualDirection: draft.visual_direction ?? "",
@@ -187,6 +198,10 @@ async function performRevision(params: {
     return { status: "no_applicable_changes", message: "No requested visual change could be applied with the current renderer.", interpretation };
   }
 
+  // Render using the asset's actual effective strategy/sources (the
+  // resolution computed above), never re-deriving a source guess from
+  // the draft's raw keywords — the interpreter only ever adjusts
+  // renderSpec (validatedSpec), never the strategy/source itself.
   let rendered;
   try {
     rendered = await renderImagePostAsset({
@@ -197,6 +212,10 @@ async function performRevision(params: {
       purpose: draft.purpose,
       topic: draft.topic,
       renderSpec: validatedSpec,
+      strategy: resolution.strategy,
+      forceScreenshotMeta: resolution.screenshotMeta,
+      forceProposalMeta: resolution.proposalMeta,
+      generatedImage: resolution.generatedImage,
     });
   } catch (err) {
     const message = err instanceof AssetRenderError ? err.message : `Unexpected render error: ${err instanceof Error ? err.message : String(err)}`;
@@ -210,6 +229,16 @@ async function performRevision(params: {
     const message = err instanceof AssetStorageError ? err.message : `Unexpected storage error: ${err instanceof Error ? err.message : String(err)}`;
     return insertFailedRevision(db, draft, nextVersion, `Storage upload failed: ${message}`, feedback, latest.asset_version, validatedSpec, rendered.provenance);
   }
+
+  const visualPlanProvenance = buildVisualPlanProvenance({
+    plan: { ...resolution.plan, renderSpec: validatedSpec },
+    strategy: resolution.strategy,
+    origin: resolution.origin,
+    degraded: resolution.degraded,
+    degradeReason: resolution.degradeReason,
+    generatedImageInfo: resolution.generatedImageInfo,
+    draft,
+  });
 
   const { data: asset, error: insertError } = await db
     .from("content_assets")
@@ -227,6 +256,7 @@ async function performRevision(params: {
       storage_path: storagePath,
       render_provenance: {
         ...rendered.provenance,
+        ...visualPlanProvenance,
         feedback: {
           text: feedback,
           revisedFromVersion: latest.asset_version,

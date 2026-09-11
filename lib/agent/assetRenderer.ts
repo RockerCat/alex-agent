@@ -3,7 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
 import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
-import { DEFAULT_RENDER_SPEC, type AssetRenderSpec } from "@/lib/agent/schemas";
+import { DEFAULT_RENDER_SPEC, type AssetRenderSpec, type VisualStrategy } from "@/lib/agent/schemas";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
 // rasterized by Sharp, with the real official logo PNG composited on
@@ -204,16 +204,60 @@ const DISCLOSURE_PRESETS: Record<AssetRenderSpec["disclosureEmphasis"], { fontSi
   normal: { fontSize: PROPOSAL_DISCLOSURE_FONT_SIZE, opacity: 0.62 },
 };
 
+// Layout constants for the hero composition (generated_photo /
+// generated_illustration / hybrid strategies — Visual Director,
+// AlexAgent v0.2). A generated supporting image fills the canvas;
+// a bottom scrim gradient (always drawn, regardless of the photo's own
+// content — this is what actually guarantees text legibility, not a
+// request to the generative model) carries the headline/CTA; the logo
+// gets its own small solid-navy backing chip so contrast is guaranteed
+// regardless of what's behind it. hybrid additionally insets one real
+// verified card (product screenshot or a single proposal page) in the
+// clean space between the logo and the scrim.
+const HERO_LOGO_Y = 56;
+const HERO_LOGO_CHIP_PADDING = 18;
+const HERO_LOGO_CHIP_RADIUS = 16;
+const HERO_SCRIM_TOP_RATIO = 0.56; // fraction of canvas height where the scrim gradient begins
+const HERO_HEADLINE_TOP_Y = 1000;
+const HERO_HEADLINE_SIZES = [56, 48, 42, 36, 30];
+const HERO_HEADLINE_MAX_LINES = 3;
+const HERO_CTA_Y = 1250;
+const HERO_CARD_TOP_Y = 380;
+const HERO_CARD_WIDTH = Math.round(CONTENT_WIDTH * 0.82);
+const HERO_CARD_RADIUS = 20;
+
 export interface RenderAssetInput {
   headline: string;
   ctaText: string;
   assetVersion: number;
-  /** Approved draft fields used only to decide whether a real product screenshot belongs in the composition — never used as literal layout instructions. */
+  /** Approved draft fields used only to decide whether a real product screenshot belongs in the composition — never used as literal layout instructions. Ignored for source selection when `strategy`/`forceScreenshotMeta`/`forceProposalMeta` are explicitly provided (Visual Director path); still used for headline/CTA text wrapping regardless. */
   visualDirection?: string;
   purpose?: string;
   topic?: string;
   /** Bounded composition adjustments (see lib/agent/schemas.ts). Defaults to DEFAULT_RENDER_SPEC, which reproduces the original fixed layout exactly. */
   renderSpec?: AssetRenderSpec;
+  /**
+   * Visual Director integration (AlexAgent v0.2 — all fields below are
+   * optional and additive; omitting all of them reproduces today's
+   * exact keyword-driven selection byte-for-byte, so every existing
+   * caller/test is unaffected). When `strategy` is one of the
+   * generative strategies, this function delegates to a separate hero
+   * composition path driven by `generatedImage` rather than the
+   * existing product/proposal/text-only branches below. When `strategy`
+   * is "branded_graphic", source selection is skipped entirely (forced
+   * text-only) even if visualDirection/purpose/topic would otherwise
+   * keyword-match a screenshot/proposal. When `forceScreenshotMeta` /
+   * `forceProposalMeta` are explicitly passed (including explicitly
+   * `null`, meaning "resolved to nothing"), they are used in place of
+   * this function's own selectProductScreenshot/selectProposalExample
+   * calls — the caller (a Visual-Director-resolved plan) has already
+   * decided which real catalog entry (if any) applies.
+   */
+  strategy?: VisualStrategy;
+  forceScreenshotMeta?: ScreenshotMeta | null;
+  forceProposalMeta?: ProposalExampleMeta | null;
+  /** Resolved generated image bytes for generated_photo/generated_illustration/hybrid strategies. Required (non-null) for those strategies — never fabricated by this function if absent (throws AssetRenderError instead). */
+  generatedImage?: Buffer | null;
 }
 
 export interface RenderAssetResult {
@@ -406,12 +450,24 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     topic: input.topic ?? "",
   };
 
+  if (input.strategy === "generated_photo" || input.strategy === "generated_illustration" || input.strategy === "hybrid") {
+    return renderHeroComposition(input, theme, spec);
+  }
+  const forceBrandedGraphic = input.strategy === "branded_graphic";
+
   // Proposal-example takes precedence over the internal product
   // screenshot when the brief clearly asks to show the actual
   // client-facing proposal/output (see proposalExamples.ts) — only
   // falls through to the screenshot catalog when no proposal example
   // is selected, or the selected one cannot be safely prepared.
-  const proposalMeta = selectProposalExample(selectionInput);
+  // A Visual-Director-resolved plan may instead force the exact
+  // catalog entry (or force nothing, for branded_graphic) via
+  // forceProposalMeta — see RenderAssetInput's doc comment.
+  const proposalMeta = forceBrandedGraphic
+    ? null
+    : input.forceProposalMeta !== undefined
+      ? input.forceProposalMeta
+      : selectProposalExample(selectionInput);
   let proposalStack: ProposalStack | null = null;
   if (proposalMeta) {
     try {
@@ -434,8 +490,8 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
 
   let screenshotMeta: ScreenshotMeta | null = null;
   let screenshotCard: { buffer: Buffer; height: number } | null = null;
-  if (!usesProposalLayout) {
-    screenshotMeta = selectProductScreenshot(selectionInput);
+  if (!usesProposalLayout && !forceBrandedGraphic) {
+    screenshotMeta = input.forceScreenshotMeta !== undefined ? input.forceScreenshotMeta : selectProductScreenshot(selectionInput);
     if (screenshotMeta) {
       try {
         const displayWidth = productCardWidth - PRODUCT_CARD_PADDING * 2;
@@ -625,6 +681,185 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
             selected: usesProposalLayout,
             pdfPath: proposalMeta.pdfPath,
             pages: proposalMeta.pages.map((p) => `${PROPOSAL_RENDERED_DIR}/${p.file}`),
+            disclosureText: PROPOSAL_DISCLOSURE_TEXT,
+          }
+        : { selected: false },
+    },
+  };
+}
+
+/**
+ * Hero composition: a generated supporting image (see
+ * lib/agent/imageGenerationClient.ts) fills the canvas; brand chrome
+ * (logo, headline, CTA) is composited on top over a deterministic scrim
+ * gradient that guarantees legibility regardless of the photo's own
+ * content — the gradient is drawn by this renderer unconditionally, not
+ * requested/hoped-for from the generative model. For the "hybrid"
+ * strategy, one real verified source (a product screenshot or a single
+ * proposal page — never generated) is additionally inset in the clean
+ * space between the logo and the scrim. Never called with a null
+ * `generatedImage` by any resolved caller; still fails loudly rather
+ * than fabricating one if that ever happens.
+ */
+async function renderHeroComposition(
+  input: RenderAssetInput,
+  theme: Theme,
+  spec: AssetRenderSpec
+): Promise<RenderAssetResult> {
+  if (!input.generatedImage) {
+    throw new AssetRenderError("Hero composition requires a resolved generated image, but none was provided.");
+  }
+
+  const headlineWrap = wrapToFit(input.headline, HERO_HEADLINE_SIZES, CONTENT_WIDTH, HERO_HEADLINE_MAX_LINES);
+  if (!headlineWrap) {
+    throw new AssetRenderError(
+      "The approved headline is too long to render safely within the image layout without truncating or overflowing it."
+    );
+  }
+  const ctaPaddingScale = CTA_EMPHASIS_PADDING_SCALE[spec.ctaEmphasis];
+  const ctaWrap = wrapToFit(input.ctaText, CTA_EMPHASIS_FONT_SIZES[spec.ctaEmphasis], CONTENT_WIDTH - 96, 1);
+  if (!ctaWrap) {
+    throw new AssetRenderError("The approved CTA text is too long to render safely within a single-line CTA pill.");
+  }
+  const ctaLine = ctaWrap.lines[0];
+  const ctaFontSize = ctaWrap.fontSize;
+  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96 * ctaPaddingScale);
+  const ctaPillHeight = ctaFontSize + 48 * ctaPaddingScale;
+
+  const screenshotMeta = input.strategy === "hybrid" ? (input.forceScreenshotMeta ?? null) : null;
+  const proposalMeta = input.strategy === "hybrid" && !screenshotMeta ? (input.forceProposalMeta ?? null) : null;
+
+  let insetCard: { buffer: Buffer; width: number; height: number } | null = null;
+  if (screenshotMeta) {
+    try {
+      const displayWidth = HERO_CARD_WIDTH - PRODUCT_CARD_PADDING * 2;
+      const card = await prepareScreenshotCard(screenshotMeta, displayWidth, HERO_CARD_RADIUS - PRODUCT_CARD_PADDING / 2);
+      insetCard = { buffer: card.buffer, width: displayWidth, height: card.height };
+    } catch {
+      insetCard = null; // Fail safely: never fabricate UI.
+    }
+  } else if (proposalMeta) {
+    try {
+      const [page1Meta] = proposalMeta.pages;
+      insetCard = await preparePageCard(page1Meta.file, HERO_CARD_WIDTH, HERO_CARD_RADIUS, page1Meta.contentHeight);
+    } catch {
+      insetCard = null; // Fail safely: never fabricate a proposal.
+    }
+  }
+  const showsProposalDisclosure = insetCard !== null && proposalMeta !== null;
+
+  const accentBarSvg =
+    theme.accentBarPosition === "top"
+      ? `<rect x="0" y="0" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`
+      : `<rect x="0" y="${IMAGE_POST_HEIGHT - 24}" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`;
+
+  const scrimTopY = Math.round(IMAGE_POST_HEIGHT * HERO_SCRIM_TOP_RATIO);
+  const lineHeight = headlineWrap.fontSize * 1.25;
+  const headlineLinesSvg = headlineWrap.lines
+    .map((line, i) => `<tspan x="${IMAGE_POST_WIDTH / 2}" dy="${i === 0 ? 0 : lineHeight}">${escapeXml(line)}</tspan>`)
+    .join("");
+
+  const disclosurePreset = DISCLOSURE_PRESETS[spec.disclosureEmphasis];
+  const disclosureSvg = showsProposalDisclosure
+    ? `
+    <text
+      x="${IMAGE_POST_WIDTH / 2}"
+      y="${HERO_HEADLINE_TOP_Y - 40}"
+      text-anchor="middle"
+      font-family="${FONT_STACK}"
+      font-weight="normal"
+      font-size="${disclosurePreset.fontSize}"
+      fill="${WHITE}"
+      fill-opacity="${disclosurePreset.opacity}"
+    >${escapeXml(PROPOSAL_DISCLOSURE_TEXT)}</text>
+    `
+    : "";
+
+  const logoWidth = Math.round(LOGO_WIDTH * LOGO_EMPHASIS_SCALE[spec.logoEmphasis]);
+  const logoChipWidth = logoWidth + HERO_LOGO_CHIP_PADDING * 2;
+  const logoChipHeight = Math.round(logoWidth * 0.36) + HERO_LOGO_CHIP_PADDING * 2; // approximates the real logo file's aspect ratio with headroom
+
+  // Transparent background (no navy fill rect, unlike the other
+  // compositions) — this overlay is composited ON TOP of the generated
+  // photo, not used as the base canvas itself.
+  const overlaySvg = `
+    <svg width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="heroScrim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${NAVY}" stop-opacity="0" />
+          <stop offset="100%" stop-color="${NAVY}" stop-opacity="0.86" />
+        </linearGradient>
+      </defs>
+      ${accentBarSvg}
+      <rect x="0" y="${scrimTopY}" width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT - scrimTopY}" fill="url(#heroScrim)" />
+      <rect x="${MARGIN_X - HERO_LOGO_CHIP_PADDING}" y="${HERO_LOGO_Y - HERO_LOGO_CHIP_PADDING}" width="${logoChipWidth}" height="${logoChipHeight}" rx="${HERO_LOGO_CHIP_RADIUS}" fill="${NAVY}" fill-opacity="0.72" />
+      ${disclosureSvg}
+      <text
+        x="${IMAGE_POST_WIDTH / 2}"
+        y="${HERO_HEADLINE_TOP_Y}"
+        text-anchor="middle"
+        font-family="${FONT_STACK}"
+        font-weight="bold"
+        font-size="${headlineWrap.fontSize}"
+        fill="${WHITE}"
+      >${headlineLinesSvg}</text>
+      <rect
+        x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
+        y="${HERO_CTA_Y - ctaPillHeight / 2}"
+        width="${ctaPillWidth}"
+        height="${ctaPillHeight}"
+        rx="${ctaPillHeight / 2}"
+        fill="${AMBER}"
+      />
+      <text
+        x="${IMAGE_POST_WIDTH / 2}"
+        y="${HERO_CTA_Y + ctaFontSize * 0.32}"
+        text-anchor="middle"
+        font-family="${FONT_STACK}"
+        font-weight="bold"
+        font-size="${ctaFontSize}"
+        fill="${NAVY}"
+      >${escapeXml(ctaLine)}</text>
+    </svg>
+  `;
+
+  const heroBackground = await sharp(input.generatedImage)
+    .resize({ width: IMAGE_POST_WIDTH, height: IMAGE_POST_HEIGHT, fit: "cover" })
+    .png()
+    .toBuffer();
+  const overlayPng = await sharp(Buffer.from(overlaySvg)).png().toBuffer();
+  const logoBuffer = await loadLogoBuffer(logoWidth);
+
+  const composites: Array<{ input: Buffer; top: number; left: number }> = [
+    { input: overlayPng, top: 0, left: 0 },
+    { input: logoBuffer, top: HERO_LOGO_Y, left: MARGIN_X },
+  ];
+  if (insetCard) {
+    const cardX = Math.round((IMAGE_POST_WIDTH - insetCard.width) / 2);
+    composites.push({ input: insetCard.buffer, top: HERO_CARD_TOP_Y, left: cardX });
+  }
+
+  const png = await sharp(heroBackground).composite(composites).png().toBuffer();
+
+  return {
+    png,
+    width: IMAGE_POST_WIDTH,
+    height: IMAGE_POST_HEIGHT,
+    provenance: {
+      renderer: "svg-sharp-hero-v1",
+      theme: themeForVersion(input.assetVersion),
+      renderSpec: spec,
+      logoFile: LOGO_FILE,
+      headline: { source: "draft.hook", fontSize: headlineWrap.fontSize, lines: headlineWrap.lines.length },
+      cta: { source: "draft.cta_text", fontSize: ctaFontSize },
+      screenshot: screenshotMeta
+        ? { selected: insetCard !== null, file: screenshotMeta.file, visibleSubject: screenshotMeta.visibleSubject, source: SCREENSHOT_DIR }
+        : { selected: false },
+      proposalExample: proposalMeta
+        ? {
+            selected: insetCard !== null,
+            pdfPath: proposalMeta.pdfPath,
+            pages: [`${PROPOSAL_RENDERED_DIR}/${proposalMeta.pages[0].file}`],
             disclosureText: PROPOSAL_DISCLOSURE_TEXT,
           }
         : { selected: false },

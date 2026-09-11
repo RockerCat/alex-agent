@@ -21,6 +21,14 @@ export interface AssetStorage {
   /** Uploads exactly once per path — must fail (never overwrite) if the path already exists. */
   upload(path: string, data: Buffer, contentType: string): Promise<void>;
   createSignedUrl(path: string, expiresInSeconds: number): Promise<string | null>;
+  /**
+   * Reads back a previously uploaded object. Used to reuse a
+   * Visual-Director-generated source image (see assetGenerator.ts's
+   * "regenerate reuses the same plan/generated image" semantics and
+   * assetRevision.ts's Request Changes revisions) without a new paid
+   * generative call. Throws AssetStorageError if the object doesn't exist.
+   */
+  download(path: string): Promise<Buffer>;
 }
 
 export class SupabaseAssetStorage implements AssetStorage {
@@ -40,5 +48,13 @@ export class SupabaseAssetStorage implements AssetStorage {
     const { data, error } = await this.db.storage.from(ASSET_BUCKET).createSignedUrl(path, expiresInSeconds);
     if (error || !data) return null;
     return data.signedUrl;
+  }
+
+  async download(path: string): Promise<Buffer> {
+    const { data, error } = await this.db.storage.from(ASSET_BUCKET).download(path);
+    if (error || !data) {
+      throw new AssetStorageError(error?.message ?? `Object not found at path "${path}".`);
+    }
+    return Buffer.from(await data.arrayBuffer());
   }
 }

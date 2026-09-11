@@ -22,6 +22,19 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
   "gpt-4.1-nano": { inputPerMillion: 0.1, cachedInputPerMillion: 0.025, outputPerMillion: 0.4 },
   "gpt-4o": { inputPerMillion: 2.5, cachedInputPerMillion: 1.25, outputPerMillion: 10.0 },
   "gpt-4o-mini": { inputPerMillion: 0.15, cachedInputPerMillion: 0.075, outputPerMillion: 0.6 },
+  // Image generation (Visual Director's generative strategies —
+  // lib/agent/imageGenerationClient.ts). The Images API bills gpt-image-1
+  // in tokens via the same input/output shape as every text model here
+  // (see ImagesResponse.usage in the installed `openai` SDK), so it
+  // slots into this exact table/estimateCostUsd machinery unmodified.
+  // Figures are OpenAI's published gpt-image-1 per-token rates at
+  // implementation time (text input $5/1M, image output $40/1M) — NOT
+  // independently reverified against a live call in this codebase.
+  // Cached input is conservatively priced equal to input (no assumed
+  // caching discount). Alex must confirm current pricing before setting
+  // OPENAI_IMAGE_MODEL in production, same posture already required for
+  // OPENAI_PLANNER_MODEL/OPENAI_EXECUTOR_MODEL (see lib/env.ts).
+  "gpt-image-1": { inputPerMillion: 5.0, cachedInputPerMillion: 5.0, outputPerMillion: 40.0 },
 };
 
 // Conservative fallback for a model id not present in the table above —

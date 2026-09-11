@@ -31,5 +31,14 @@ export const env = {
   // explicitly only once a specific configured model is confirmed to
   // accept it.
   plannerReasoningEffort: () => process.env.OPENAI_PLANNER_REASONING_EFFORT || null,
+  // Visual Director generative-imagery capability (lib/agent/imageGenerationClient.ts).
+  // Opt-in only, same posture as plannerReasoningEffort above: absent or
+  // empty means generative strategies are unavailable and the Visual
+  // Director must never select one — capability is not assumed from the
+  // installed SDK version, only from an explicit, human-confirmed model
+  // id. Set it only once a specific model is confirmed to work and its
+  // pricing (lib/agent/pricing.ts) has been verified against live
+  // OpenAI billing.
+  imageModel: () => process.env.OPENAI_IMAGE_MODEL || null,
   ownerEmail: () => process.env.OWNER_EMAIL || null,
 };

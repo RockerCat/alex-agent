@@ -5,6 +5,30 @@ import { useRouter } from "next/navigation";
 import { generateAssetAction, approveAssetAction, requestAssetChangesAction } from "@/app/actions";
 import type { ContentAssetRow } from "@/lib/types/database";
 import type { AssetFeedbackInterpretationSummary } from "@/lib/agent/assetRevision";
+import type { VisualStrategy } from "@/lib/agent/schemas";
+
+const STRATEGY_LABEL: Record<VisualStrategy, string> = {
+  product_ui: "Real product interface",
+  proposal_document: "Real proposal document",
+  branded_graphic: "Branded graphic (no photo)",
+  generated_photo: "Generated photo",
+  generated_illustration: "Generated illustration",
+  hybrid: "Generated image + verified SolarDesk material",
+};
+
+/**
+ * Reads the compact creative-direction summary AlexAgent's Visual
+ * Director recorded for this asset (render_provenance.visualPlan) —
+ * never raw JSON/enum names shown to Alex, and null-safe for any asset
+ * that predates this feature (no visualPlan in its provenance).
+ */
+function getVisualPlanSummary(asset: ContentAssetRow): { strategyLabel: string; concept: string } | null {
+  const provenance = asset.render_provenance as Record<string, unknown> | null;
+  const visualPlan = provenance?.visualPlan as { strategy?: unknown; creativeConcept?: unknown } | undefined;
+  if (!visualPlan || typeof visualPlan.strategy !== "string" || typeof visualPlan.creativeConcept !== "string") return null;
+  const strategy = visualPlan.strategy as VisualStrategy;
+  return { strategyLabel: STRATEGY_LABEL[strategy] ?? strategy, concept: visualPlan.creativeConcept };
+}
 
 const STATUS_LABEL: Record<ContentAssetRow["status"], string> = {
   pending_review: "Pending review",
@@ -144,6 +168,24 @@ export function AssetPanel({
               {asset.width}×{asset.height} · {asset.format} · {asset.mime_type}
             </p>
           )}
+
+          {(() => {
+            const visualSummary = getVisualPlanSummary(asset);
+            if (!visualSummary) return null;
+            return (
+              <div className="text-xs space-y-0.5">
+                <p>
+                  <span className="font-medium">Visual strategy:</span> {visualSummary.strategyLabel}
+                </p>
+                <p style={{ color: "var(--muted)" }}>
+                  <span className="font-medium" style={{ color: "inherit" }}>
+                    Concept:
+                  </span>{" "}
+                  {visualSummary.concept}
+                </p>
+              </div>
+            );
+          })()}
 
           <div className="flex flex-wrap gap-2">
             {asset.status === "pending_review" && (

@@ -6,9 +6,11 @@ import {
   plannerOutputSchema,
   executorOutputSchema,
   assetFeedbackInterpretationSchema,
+  visualCreativePlanSchema,
   type PlannerOutput,
   type ExecutorOutput,
   type AssetFeedbackInterpretation,
+  type VisualCreativePlan,
 } from "@/lib/agent/schemas";
 import type { UsageTokens } from "@/lib/agent/pricing";
 
@@ -23,6 +25,11 @@ export interface ExecutorCallInput {
 }
 
 export interface AssetFeedbackCallInput {
+  systemPrompt: string;
+  userPrompt: string;
+}
+
+export interface VisualDirectorCallInput {
   systemPrompt: string;
   userPrompt: string;
 }
@@ -68,6 +75,14 @@ export interface AssetFeedbackCallResult {
   incomplete?: { reason: string };
 }
 
+/** Same incomplete/output-optional shape as the other structured-output calls, for the same reason. */
+export interface VisualDirectorCallResult {
+  output?: VisualCreativePlan;
+  usage: UsageTokens;
+  model: string;
+  incomplete?: { reason: string };
+}
+
 /**
  * Thin seam between the agent runtime and the model provider. Production
  * code uses OpenAiClient; tests inject a scripted fake so Planner/Executor
@@ -79,6 +94,7 @@ export interface AiClient {
   runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>>;
   runExecutor(input: ExecutorCallInput): Promise<ExecutorCallResult>;
   runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult>;
+  runVisualDirector(input: VisualDirectorCallInput): Promise<VisualDirectorCallResult>;
 }
 
 // Generous headroom above what EXECUTOR_TEXT_LIMITS (lib/agent/schemas.ts)
@@ -97,6 +113,14 @@ const EXECUTOR_MAX_OUTPUT_TOKENS = 4000;
 // a small, cheap cap, sized with headroom for those summaries rather
 // than the bare enums alone.
 const ASSET_FEEDBACK_MAX_OUTPUT_TOKENS = 700;
+
+// The Visual Director's output is one enum strategy + a reused
+// AssetRenderSpec (five short enums) + up to four capped-length
+// explanatory/creative strings (VISUAL_PLAN_TEXT_LIMITS in
+// lib/agent/schemas.ts: creativeConcept 280, communicationGoal 240,
+// generativeSceneDescription 500, rationale 400 chars) — sized with
+// headroom for all four at their ceiling plus enum/JSON overhead.
+const VISUAL_DIRECTOR_MAX_OUTPUT_TOKENS = 1600;
 
 function usageFromResponse(
   usage:
@@ -230,6 +254,43 @@ export class OpenAiClient implements AiClient {
     const parsed = response.output_parsed;
     if (!parsed) {
       throw new Error("Asset feedback interpreter response did not contain parsed structured output");
+    }
+
+    return {
+      output: parsed,
+      usage,
+      model,
+    };
+  }
+
+  async runVisualDirector(input: VisualDirectorCallInput): Promise<VisualDirectorCallResult> {
+    // Same executor model/configuration as runExecutor/runAssetFeedbackInterpreter
+    // (spec: narrow, non-reasoning creative-planning task, one call) —
+    // just a different bounded output schema.
+    const model = env.executorModel();
+    const response = await this.client.responses.parse({
+      model,
+      max_output_tokens: VISUAL_DIRECTOR_MAX_OUTPUT_TOKENS,
+      input: [
+        { role: "system", content: input.systemPrompt },
+        { role: "user", content: input.userPrompt },
+      ],
+      text: { format: zodTextFormat(visualCreativePlanSchema, "visual_creative_plan") },
+    });
+
+    const usage = usageFromResponse(response.usage);
+
+    if (response.status === "incomplete") {
+      return {
+        usage,
+        model,
+        incomplete: { reason: response.incomplete_details?.reason ?? "unknown" },
+      };
+    }
+
+    const parsed = response.output_parsed;
+    if (!parsed) {
+      throw new Error("Visual Director response did not contain parsed structured output");
     }
 
     return {
