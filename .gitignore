@@ -41,6 +41,9 @@ yarn-error.log*
 # but identifying infra details that don't belong in the repo)
 supabase/.temp/
 
+# local-only manual QA output (e.g. scripts/visual-director-qa.ts) — never committed
+/tmp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
