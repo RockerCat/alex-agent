@@ -5,10 +5,10 @@ import { env } from "@/lib/env";
 import {
   plannerOutputSchema,
   executorOutputSchema,
-  assetRenderSpecSchema,
+  assetFeedbackInterpretationSchema,
   type PlannerOutput,
   type ExecutorOutput,
-  type AssetRenderSpec,
+  type AssetFeedbackInterpretation,
 } from "@/lib/agent/schemas";
 import type { UsageTokens } from "@/lib/agent/pricing";
 
@@ -54,14 +54,15 @@ export interface ExecutorCallResult {
 
 /**
  * Same incomplete/output-optional shape as ExecutorCallResult, for the
- * same reason — even though assetRenderSpecSchema has no string fields
- * that truncation could corrupt (every field is a bounded enum), the
- * Responses API's own `status: "incomplete"` signal is still checked
- * rather than trusted-by-omission, consistent with how every other
- * structured-output call in this codebase treats that signal.
+ * same reason — the Responses API's own `status: "incomplete"` signal
+ * is checked rather than trusted-by-omission, consistent with how
+ * every other structured-output call in this codebase treats that
+ * signal. Unlike the renderSpec enums, appliedChanges/unsupportedRequests
+ * ARE free-text-ish strings, so truncation here is a real (if bounded
+ * by ASSET_FEEDBACK_SUMMARY_MAX_LENGTH) risk, not just belt-and-braces.
  */
 export interface AssetFeedbackCallResult {
-  output?: AssetRenderSpec;
+  output?: AssetFeedbackInterpretation;
   usage: UsageTokens;
   model: string;
   incomplete?: { reason: string };
@@ -89,10 +90,13 @@ export interface AiClient {
 // strictly an upper bound sent to the API.
 const EXECUTOR_MAX_OUTPUT_TOKENS = 4000;
 
-// The asset feedback interpreter's entire output is five short enum
-// values — a small cap is both cheaper and a stronger structural
-// signal that nothing beyond the bounded schema was ever expected.
-const ASSET_FEEDBACK_MAX_OUTPUT_TOKENS = 300;
+// The asset feedback interpreter's output is five short enum values
+// plus up to ASSET_FEEDBACK_SUMMARY_MAX_ITEMS short (<=
+// ASSET_FEEDBACK_SUMMARY_MAX_LENGTH-char) explanatory strings in each
+// of appliedChanges/unsupportedRequests (lib/agent/schemas.ts) — still
+// a small, cheap cap, sized with headroom for those summaries rather
+// than the bare enums alone.
+const ASSET_FEEDBACK_MAX_OUTPUT_TOKENS = 700;
 
 function usageFromResponse(
   usage:
@@ -210,7 +214,7 @@ export class OpenAiClient implements AiClient {
         { role: "system", content: input.systemPrompt },
         { role: "user", content: input.userPrompt },
       ],
-      text: { format: zodTextFormat(assetRenderSpecSchema, "asset_render_spec") },
+      text: { format: zodTextFormat(assetFeedbackInterpretationSchema, "asset_feedback_interpretation") },
     });
 
     const usage = usageFromResponse(response.usage);

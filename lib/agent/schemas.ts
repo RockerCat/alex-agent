@@ -153,3 +153,33 @@ export const DEFAULT_RENDER_SPEC: AssetRenderSpec = {
   secondaryPageVisibility: "normal",
   disclosureEmphasis: "normal",
 };
+
+// ---------------------------------------------------------------------
+// Asset feedback interpreter result — transparency, not new capability
+// ---------------------------------------------------------------------
+//
+// AssetRenderSpec above stays the ONLY thing that can ever influence
+// rendering. This wraps it with two purely explanatory, bounded lists
+// of short human-readable summary strings so Alex's feedback can be
+// evaluated field-by-field against the five real controls: what got
+// applied, and what the feedback asked for that the current renderer
+// simply cannot do. Neither list is free-form enough to carry
+// executable instructions, copy, coordinates, colors, or file
+// references — they're capped short strings, not structured
+// instructions, and nothing downstream ever reads them for anything
+// but display.
+export const ASSET_FEEDBACK_SUMMARY_MAX_LENGTH = 160;
+export const ASSET_FEEDBACK_SUMMARY_MAX_ITEMS = 6;
+
+export const assetFeedbackInterpretationSchema = z.object({
+  renderSpec: assetRenderSpecSchema,
+  /** Short human-readable (Spanish) summaries of requested changes that WERE reflected in renderSpec above. Explanatory only — never fed back into rendering. */
+  appliedChanges: z
+    .array(z.string().min(1).max(ASSET_FEEDBACK_SUMMARY_MAX_LENGTH))
+    .max(ASSET_FEEDBACK_SUMMARY_MAX_ITEMS),
+  /** Short human-readable (Spanish) summaries of requested changes that could NOT be represented by the current five-field AssetRenderSpec. Explanatory only — never fed back into rendering. */
+  unsupportedRequests: z
+    .array(z.string().min(1).max(ASSET_FEEDBACK_SUMMARY_MAX_LENGTH))
+    .max(ASSET_FEEDBACK_SUMMARY_MAX_ITEMS),
+});
+export type AssetFeedbackInterpretation = z.infer<typeof assetFeedbackInterpretationSchema>;

@@ -7,7 +7,14 @@ import type {
   AssetFeedbackCallInput,
   AssetFeedbackCallResult,
 } from "@/lib/agent/aiClient";
-import { EXECUTOR_TEXT_LIMITS, DEFAULT_RENDER_SPEC, type PlannerOutput, type ExecutorOutput, type AssetRenderSpec } from "@/lib/agent/schemas";
+import {
+  EXECUTOR_TEXT_LIMITS,
+  DEFAULT_RENDER_SPEC,
+  type PlannerOutput,
+  type ExecutorOutput,
+  type AssetRenderSpec,
+  type AssetFeedbackInterpretation,
+} from "@/lib/agent/schemas";
 
 /**
  * Scripted stand-in for the OpenAI-backed AiClient. Tests queue up
@@ -47,7 +54,9 @@ export class ScriptedAiClient implements AiClient {
   constructor(
     private plannerQueue: PlannerOutput[] = [],
     private executorQueue: ExecutorOutput[] = [],
-    private assetFeedbackQueue: AssetRenderSpec[] = [DEFAULT_RENDER_SPEC]
+    private assetFeedbackQueue: AssetFeedbackInterpretation[] = [
+      { renderSpec: DEFAULT_RENDER_SPEC, appliedChanges: [], unsupportedRequests: [] },
+    ]
   ) {}
 
   async runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>> {
@@ -90,6 +99,24 @@ export class ScriptedAiClient implements AiClient {
     if (!output) throw new Error("ScriptedAiClient: no asset feedback output queued");
     return { output, usage, model };
   }
+}
+
+/**
+ * Test convenience: wrap a bare AssetRenderSpec into a full
+ * AssetFeedbackInterpretation, defaulting appliedChanges to a single
+ * generic summary (so a scripted "the spec changed" response still
+ * reads as an applied, not an unsupported, change unless a test
+ * overrides it) and unsupportedRequests to empty.
+ */
+export function feedbackInterpretation(
+  renderSpec: AssetRenderSpec,
+  overrides: Partial<Pick<AssetFeedbackInterpretation, "appliedChanges" | "unsupportedRequests">> = {}
+): AssetFeedbackInterpretation {
+  return {
+    renderSpec,
+    appliedChanges: overrides.appliedChanges ?? ["Ajuste visual aplicado"],
+    unsupportedRequests: overrides.unsupportedRequests ?? [],
+  };
 }
 
 export function carouselExecutorOutput(overrides: Partial<ExecutorOutput> = {}): ExecutorOutput {

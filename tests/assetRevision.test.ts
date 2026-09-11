@@ -3,7 +3,7 @@ import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { createFakeDb, asSupabaseClient } from "@/tests/support/fakeDb";
 import { FakeAssetStorage } from "@/tests/support/fakeAssetStorage";
-import { ScriptedAiClient } from "@/tests/support/fakeAiClient";
+import { ScriptedAiClient, feedbackInterpretation } from "@/tests/support/fakeAiClient";
 import { seedDefaultSettings } from "@/tests/support/seed";
 import { DEFAULT_RENDER_SPEC, type AssetRenderSpec } from "@/lib/agent/schemas";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -94,7 +94,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({
       db,
@@ -113,7 +113,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [{ ...DEFAULT_RENDER_SPEC, ctaEmphasis: "subtle" }]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation({ ...DEFAULT_RENDER_SPEC, ctaEmphasis: "subtle" })]);
 
     const outcome = await requestAssetChanges({
       db,
@@ -132,7 +132,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     const first = await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -146,7 +146,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     seedDraft(fake, "draft-1");
     const first = await generateAsset({ db, storage, draftId: "draft-1" });
     const beforeRow = { ...fake.getAll("content_assets").find((r) => r.id === first.asset!.id) };
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -162,7 +162,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({
       db,
@@ -184,7 +184,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     const approved = await seedApprovedAsset(fake, db, storage, "draft-1");
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -202,7 +202,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
     const before = { ...fake.getAll("content_drafts").find((d) => d.id === "draft-1") };
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -217,10 +217,16 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const before = { ...fake.getAll("content_drafts").find((d) => d.id === "draft-1") };
     // The interpreter's schema has no field for claims/text at all — the
     // model can only ever return bounded enum values regardless of what
-    // the feedback asks for. Scripting a "closest safe" default response
-    // simulates that, and the assertion that matters is that the draft's
-    // approved text never changes no matter what the feedback says.
-    const aiClient = new ScriptedAiClient([], [], [DEFAULT_RENDER_SPEC]);
+    // the feedback asks for. Scripting a "nothing applicable, report it
+    // unsupported" response simulates the required behavior for a purely
+    // factual request; the assertion that matters is that the draft's
+    // approved text never changes no matter what the feedback says, and
+    // the fabricated claim is never rendered or persisted anywhere.
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [feedbackInterpretation(DEFAULT_RENDER_SPEC, { appliedChanges: [], unsupportedRequests: ["Agregar la afirmación de garantía de ahorro del 30%"] })]
+    );
 
     const outcome = await requestAssetChanges({
       db,
@@ -230,12 +236,93 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
       feedback: "Pon que SolarDesk garantiza 30% de ahorro.",
     });
 
-    expect(outcome.status).toBe("success");
+    expect(outcome.status).toBe("no_applicable_changes");
+    expect(outcome.interpretation?.appliedChanges).toEqual([]);
+    expect(outcome.interpretation?.unsupportedRequests).toHaveLength(1);
     const after = fake.getAll("content_drafts").find((d) => d.id === "draft-1");
     expect(after).toEqual(before);
     expect(after?.hook).toBe(before.hook);
     expect(after?.cta_text).toBe(before.cta_text);
     expect(after?.visual_direction).toBe(before.visual_direction);
+    // No new content_assets row/version was created either — only the
+    // original generateAsset row exists.
+    expect(fake.getAll("content_assets")).toHaveLength(1);
+  });
+
+  it("13a. mixed supported + unsupported feedback (larger proposal + custom shadow) applies the supported part, creates the next version, and persists both summaries", async () => {
+    const { fake, db, storage } = setup();
+    seedDraft(fake, "draft-1");
+    await generateAsset({ db, storage, draftId: "draft-1" });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [
+        feedbackInterpretation(largerProposalSpec(), {
+          appliedChanges: ["Aumentar el protagonismo de la propuesta"],
+          unsupportedRequests: ["Agregar una sombra personalizada entre las páginas"],
+        }),
+      ]
+    );
+
+    const outcome = await requestAssetChanges({
+      db,
+      storage,
+      aiClient,
+      draftId: "draft-1",
+      feedback: "Haz la propuesta más grande y agrega una sombra entre las páginas.",
+    });
+
+    expect(outcome.status).toBe("success");
+    expect(outcome.asset?.asset_version).toBe(2);
+    expect(outcome.asset?.status).toBe("pending_review");
+    expect(outcome.interpretation?.appliedChanges).toEqual(["Aumentar el protagonismo de la propuesta"]);
+    expect(outcome.interpretation?.unsupportedRequests).toEqual(["Agregar una sombra personalizada entre las páginas"]);
+
+    const spec = (outcome.asset!.render_provenance as Record<string, unknown>).renderSpec as AssetRenderSpec;
+    expect(spec.primaryVisualScale).toBe("large");
+
+    const provenance = outcome.asset!.render_provenance as Record<string, unknown>;
+    const feedbackRecord = provenance.feedback as { appliedChanges: string[]; unsupportedRequests: string[] };
+    expect(feedbackRecord.appliedChanges).toEqual(["Aumentar el protagonismo de la propuesta"]);
+    expect(feedbackRecord.unsupportedRequests).toEqual(["Agregar una sombra personalizada entre las páginas"]);
+  });
+
+  it("13b. a custom-shadow-only request is reported unsupported, never modifies AssetRenderSpec, never creates a new asset version, and never uploads a new Storage object — but still records model usage", async () => {
+    const { fake, db, storage } = setup();
+    seedDraft(fake, "draft-1");
+    const first = await generateAsset({ db, storage, draftId: "draft-1" });
+    const storageSizeBefore = storage.files.size;
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [feedbackInterpretation(DEFAULT_RENDER_SPEC, { appliedChanges: [], unsupportedRequests: ["Agregar una sombra más fuerte a las páginas"] })]
+    );
+
+    const outcome = await requestAssetChanges({
+      db,
+      storage,
+      aiClient,
+      draftId: "draft-1",
+      feedback: "Ponle una sombra más fuerte a las páginas.",
+    });
+
+    expect(outcome.status).toBe("no_applicable_changes");
+    expect(outcome.asset).toBeUndefined();
+    expect(outcome.interpretation?.appliedChanges).toEqual([]);
+    expect(outcome.interpretation?.unsupportedRequests).toEqual(["Agregar una sombra más fuerte a las páginas"]);
+
+    // No new content_assets row (of any status) was created — only the original.
+    const rows = fake.getAll("content_assets");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(first.asset!.id);
+
+    // No new Storage object was uploaded.
+    expect(storage.files.size).toBe(storageSizeBefore);
+
+    // The OpenAI call happened, so usage is still recorded.
+    const usage = fake.getAll("ai_usage");
+    expect(usage).toHaveLength(1);
+    expect(usage[0].operation).toBe("executor");
   });
 
   it("14. the interpreter cannot select an arbitrary filesystem path or asset — its schema has no such field", async () => {
@@ -254,11 +341,56 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     expect(invalidEnum.success).toBe(false);
   });
 
+  it("14a. the interpreter result schema bounds appliedChanges/unsupportedRequests — no arbitrary-length text or arbitrary field injection can reach renderSpec", async () => {
+    const {
+      assetFeedbackInterpretationSchema,
+      ASSET_FEEDBACK_SUMMARY_MAX_LENGTH,
+      ASSET_FEEDBACK_SUMMARY_MAX_ITEMS,
+    } = await import("@/lib/agent/schemas");
+
+    const valid = assetFeedbackInterpretationSchema.safeParse({
+      renderSpec: DEFAULT_RENDER_SPEC,
+      appliedChanges: ["Aumentar el protagonismo de la propuesta"],
+      unsupportedRequests: ["Agregar una sombra personalizada"],
+    });
+    expect(valid.success).toBe(true);
+
+    // A summary string over the length cap is rejected — this is what
+    // keeps these explanatory fields from becoming a place to smuggle
+    // arbitrary long text (instructions, copy, markup) past the schema.
+    const tooLong = assetFeedbackInterpretationSchema.safeParse({
+      renderSpec: DEFAULT_RENDER_SPEC,
+      appliedChanges: ["x".repeat(ASSET_FEEDBACK_SUMMARY_MAX_LENGTH + 1)],
+      unsupportedRequests: [],
+    });
+    expect(tooLong.success).toBe(false);
+
+    // More entries than the cap is rejected.
+    const tooMany = assetFeedbackInterpretationSchema.safeParse({
+      renderSpec: DEFAULT_RENDER_SPEC,
+      appliedChanges: [],
+      unsupportedRequests: Array.from({ length: ASSET_FEEDBACK_SUMMARY_MAX_ITEMS + 1 }, (_, i) => `item ${i}`),
+    });
+    expect(tooMany.success).toBe(false);
+
+    // renderSpec itself is still the same bounded enum schema — no new
+    // field (e.g. a shadow control, a color, a file path) can be smuggled
+    // onto it via this wrapper.
+    const attempt = assetFeedbackInterpretationSchema.safeParse({
+      renderSpec: { ...DEFAULT_RENDER_SPEC, shadow: "strong", customCss: "box-shadow: 0 0 10px" },
+      appliedChanges: [],
+      unsupportedRequests: [],
+    });
+    expect(attempt.success).toBe(true);
+    expect((attempt as { success: true; data: { renderSpec: AssetRenderSpec } }).data.renderSpec).not.toHaveProperty("shadow");
+    expect((attempt as { success: true; data: { renderSpec: AssetRenderSpec } }).data.renderSpec).not.toHaveProperty("customCss");
+  });
+
   it("16. proposal-example rendering still works end-to-end through a revision", async () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1"); // visual_direction asks to show the client-facing PDF
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -275,7 +407,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
       topic: "Gestiona tus propuestas solares",
     });
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [{ ...DEFAULT_RENDER_SPEC, logoEmphasis: "strong" }]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation({ ...DEFAULT_RENDER_SPEC, logoEmphasis: "strong" })]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Haz el logo más visible." });
 
@@ -288,7 +420,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1", { visual_direction: "SaaS B2B limpio, azul oscuro y ámbar.", topic: "Comienza gratis en SolarDesk" });
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [{ ...DEFAULT_RENDER_SPEC, logoEmphasis: "strong" }]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation({ ...DEFAULT_RENDER_SPEC, logoEmphasis: "strong" })]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Haz el logo más visible." });
 
@@ -314,7 +446,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
         created_at: new Date().toISOString(),
       },
     ]);
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -328,7 +460,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -359,7 +491,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const first = await generateAsset({ db, storage, draftId: "draft-1" });
     const beforeRow = { ...fake.getAll("content_assets").find((r) => r.id === first.asset!.id) };
     storage.failNextUpload = true;
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -373,8 +505,8 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClientA = new ScriptedAiClient([], [], [largerProposalSpec()]);
-    const aiClientB = new ScriptedAiClient([], [], [largerProposalSpec({ ctaEmphasis: "strong" })]);
+    const aiClientA = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
+    const aiClientB = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec({ ctaEmphasis: "strong" }))]);
 
     const [a, b] = await Promise.all([
       requestAssetChanges({ db, storage, aiClient: aiClientA, draftId: "draft-1", feedback: "Hazla más grande." }),
@@ -405,7 +537,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
     const revised = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
     expect(revised.status).toBe("success");
 
@@ -422,7 +554,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
     await generateAsset({ db, storage, draftId: "draft-1" });
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "ok" });
 
@@ -433,7 +565,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
   it("ineligible: cannot request changes when no asset has ever been generated", async () => {
     const { fake, db, storage } = setup();
     seedDraft(fake, "draft-1");
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 
@@ -446,7 +578,7 @@ describe("requestAssetChanges — feedback interpretation and revision", () => {
     const longHeadline = "Palabra ".repeat(400).trim();
     seedDraft(fake, "draft-1", { hook: longHeadline });
     await generateAsset({ db, storage, draftId: "draft-1" }); // fails, records generation_failed
-    const aiClient = new ScriptedAiClient([], [], [largerProposalSpec()]);
+    const aiClient = new ScriptedAiClient([], [], [feedbackInterpretation(largerProposalSpec())]);
 
     const outcome = await requestAssetChanges({ db, storage, aiClient, draftId: "draft-1", feedback: "Hazla más grande." });
 

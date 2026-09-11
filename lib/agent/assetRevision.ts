@@ -13,7 +13,7 @@ import {
   type AssetCompositionLayout,
   type AssetFeedbackContext,
 } from "@/lib/agent/assetFeedbackInterpreter";
-import type { AssetRenderSpec } from "@/lib/agent/schemas";
+import type { AssetRenderSpec, AssetFeedbackInterpretation } from "@/lib/agent/schemas";
 import { env } from "@/lib/env";
 import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
 
@@ -34,12 +34,20 @@ import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
 // presents whichever verified source the draft's own approved
 // visualDirection/purpose/topic already select.
 
+/** Purely explanatory — never re-fed into rendering. See assetFeedbackInterpretationSchema in lib/agent/schemas.ts. */
+export interface AssetFeedbackInterpretationSummary {
+  appliedChanges: string[];
+  unsupportedRequests: string[];
+}
+
 export interface AssetRevisionOutcome {
-  status: "success" | "ineligible" | "failed" | "concurrent";
+  status: "success" | "ineligible" | "failed" | "concurrent" | "no_applicable_changes";
   asset?: ContentAssetRow;
   message?: string;
   /** True only when status === "failed" because the Budget Guard blocked the call — mirrors RegenerateOutcome.budgetBlocked in lib/agent/revision.ts. */
   budgetBlocked?: boolean;
+  /** Present whenever the interpreter actually ran (status "success" or "no_applicable_changes") so the UI can show what was applied/unsupported. */
+  interpretation?: AssetFeedbackInterpretationSummary;
 }
 
 const MIN_FEEDBACK_LENGTH = 3;
@@ -137,7 +145,7 @@ async function performRevision(params: {
     agentRunId,
     model: env.executorModel(),
     approxInputTokens: estimateAssetFeedbackInputTokens(context),
-    approxMaxOutputTokens: 200,
+    approxMaxOutputTokens: 500,
   });
   if (!budgetCheck.allowed) {
     return { status: "failed", message: budgetCheck.reason, budgetBlocked: true };
@@ -166,7 +174,18 @@ async function performRevision(params: {
     return insertFailedRevision(db, draft, nextVersion, message, feedback, latest.asset_version);
   }
 
-  const validatedSpec: AssetRenderSpec = interpreterResult.output;
+  const { renderSpec: validatedSpec, appliedChanges, unsupportedRequests }: AssetFeedbackInterpretation = interpreterResult.output;
+  const interpretation: AssetFeedbackInterpretationSummary = { appliedChanges, unsupportedRequests };
+
+  // None of the requested changes could be represented by the current
+  // AssetRenderSpec — rendering with an unchanged spec would produce a
+  // visually identical asset. Don't spend Storage/version history on
+  // that; report the interpretation back without creating a new
+  // content_assets row at all (not even a generation_failed one — this
+  // isn't a failure, nothing was attempted).
+  if (appliedChanges.length === 0) {
+    return { status: "no_applicable_changes", message: "No requested visual change could be applied with the current renderer.", interpretation };
+  }
 
   let rendered;
   try {
@@ -212,6 +231,8 @@ async function performRevision(params: {
           text: feedback,
           revisedFromVersion: latest.asset_version,
           revisedFromStatus: latest.status,
+          appliedChanges,
+          unsupportedRequests,
         },
       },
     })
@@ -225,7 +246,7 @@ async function performRevision(params: {
     return { status: "failed", message: `Generated asset could not be persisted: ${insertError?.message ?? "unknown error"}` };
   }
 
-  return { status: "success", asset };
+  return { status: "success", asset, interpretation };
 }
 
 /**
@@ -314,6 +335,18 @@ export async function requestAssetChanges(params: {
       await db
         .from("agent_runs")
         .update({ status: "completed", summary: `Created asset revision v${outcome.asset!.asset_version} from feedback.`, completed_at: new Date().toISOString() })
+        .eq("id", lockRun.id);
+      return outcome;
+    }
+
+    if (outcome.status === "no_applicable_changes") {
+      await db
+        .from("agent_runs")
+        .update({
+          status: "completed",
+          summary: "No requested visual change could be applied with the current renderer — no new asset version was created.",
+          completed_at: new Date().toISOString(),
+        })
         .eq("id", lockRun.id);
       return outcome;
     }

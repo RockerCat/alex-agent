@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { generateAssetAction, approveAssetAction, requestAssetChangesAction } from "@/app/actions";
 import type { ContentAssetRow } from "@/lib/types/database";
+import type { AssetFeedbackInterpretationSummary } from "@/lib/agent/assetRevision";
 
 const STATUS_LABEL: Record<ContentAssetRow["status"], string> = {
   pending_review: "Pending review",
@@ -33,6 +34,7 @@ export function AssetPanel({
   const [error, setError] = useState<string | null>(null);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [interpretation, setInterpretation] = useState<AssetFeedbackInterpretationSummary | null>(null);
 
   function generate() {
     setError(null);
@@ -69,14 +71,22 @@ export function AssetPanel({
     const trimmed = feedback.trim();
     if (!trimmed) return;
     setError(null);
+    setInterpretation(null);
     startTransition(async () => {
       try {
         const result = await requestAssetChangesAction(draftId, trimmed);
-        if (result.status !== "success") {
-          setError(result.message ?? "Could not create a revision from that feedback.");
-        } else {
+        if (result.status === "success") {
           setShowFeedbackForm(false);
           setFeedback("");
+          setInterpretation(result.interpretation ?? null);
+        } else if (result.status === "no_applicable_changes") {
+          // Not an error: the interpreter ran, but none of the requested
+          // visual changes could be represented by the current renderer —
+          // no new asset version was created. Show the same summary UI,
+          // just with an empty "Applied" side.
+          setInterpretation(result.interpretation ?? null);
+        } else {
+          setError(result.message ?? "Could not create a revision from that feedback.");
         }
         router.refresh();
       } catch (err) {
@@ -195,6 +205,33 @@ export function AssetPanel({
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {interpretation && (interpretation.appliedChanges.length > 0 || interpretation.unsupportedRequests.length > 0) && (
+        <div className="rounded-md border p-3 text-xs space-y-2" style={{ borderColor: "var(--border)" }}>
+          {interpretation.appliedChanges.length > 0 ? (
+            <div>
+              <p className="font-semibold">Applied</p>
+              <ul className="list-disc list-inside">
+                {interpretation.appliedChanges.map((change, i) => (
+                  <li key={i}>{change}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p>No requested visual change could currently be applied.</p>
+          )}
+          {interpretation.unsupportedRequests.length > 0 && (
+            <div>
+              <p className="font-semibold">Not supported</p>
+              <ul className="list-disc list-inside" style={{ color: "var(--muted)" }}>
+                {interpretation.unsupportedRequests.map((request, i) => (
+                  <li key={i}>{request}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {history.length > 0 && (
         <div>
