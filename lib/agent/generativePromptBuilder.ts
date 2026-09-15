@@ -18,12 +18,25 @@ const SOLARDESK_AESTHETIC_CONSTRAINTS =
 
 // Deliberately explicit and unconditional — always appended regardless
 // of what generativeSceneDescription asks for, so a scene description
-// can never argue its way past these exclusions.
+// can never argue its way past these exclusions. Reinforced per the
+// controlled visual-provider benchmark (scripts/visual-provider-benchmark.ts):
+// the generative model must produce the scene only — never anything the
+// deterministic renderer is responsible for.
 const REQUIRED_EXCLUSIONS =
-  "Do not generate or include: any logo or brand wordmark, any app/software user interface, " +
-  "any readable text, words, numbers, or captions of any kind, any invented pricing or metrics, " +
-  "any dashboard, chart, or graph presented as real data, any document or proposal page design, " +
-  "any watermark, or any screen/device mockup showing a fake interface.";
+  "Do not generate or include: any logo, brand wordmark, or fictitious branding (including SolarDesk's), " +
+  "any app/software user interface, any readable text, words, numbers, or captions of any kind — including " +
+  "slogans, headlines, or calls to action, any invented pricing, metrics, or marketing claims, any dashboard, " +
+  "chart, or graph presented as real data, any document or proposal page design, any watermark, any screen/device " +
+  "mockup showing a fake interface, or any logo/text on clothing, uniforms, tablets, screens, documents, posters, " +
+  "or signage within the scene.";
+
+// Only relevant when the scene includes people; harmless boilerplate
+// otherwise. Same benchmark finding: correct anatomy/hands and plausible
+// interactions were what separated publishable candidates from stock-photo
+// or obviously-AI-generated ones.
+const PEOPLE_GUIDANCE =
+  "If the scene includes people: natural anatomy, anatomically correct hands and fingers, and physically " +
+  "plausible interactions; avoid a generic stock-photo or obviously-AI-generated look where reasonable for the concept.";
 
 // Leaves the lower ~40% of the frame comparatively simple/uncluttered
 // where possible, since the deterministic renderer composites a text
@@ -53,6 +66,7 @@ export function buildGenerativeImagePrompt(plan: VisualCreativePlan): BuiltGener
   const prompt = [
     `Scene: ${plan.generativeSceneDescription}`,
     SOLARDESK_AESTHETIC_CONSTRAINTS,
+    PEOPLE_GUIDANCE,
     COMPOSITION_SPACE_HINT,
     REQUIRED_EXCLUSIONS,
   ].join("\n\n");

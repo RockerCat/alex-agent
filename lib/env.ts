@@ -32,13 +32,14 @@ export const env = {
   // accept it.
   plannerReasoningEffort: () => process.env.OPENAI_PLANNER_REASONING_EFFORT || null,
   // Visual Director generative-imagery capability (lib/agent/imageGenerationClient.ts).
-  // Opt-in only, same posture as plannerReasoningEffort above: absent or
-  // empty means generative strategies are unavailable and the Visual
-  // Director must never select one — capability is not assumed from the
-  // installed SDK version, only from an explicit, human-confirmed model
-  // id. Set it only once a specific model is confirmed to work and its
-  // pricing (lib/agent/pricing.ts) has been verified against live
-  // OpenAI billing.
-  imageModel: () => process.env.OPENAI_IMAGE_MODEL || null,
+  // Defaults to gpt-image-2 — confirmed via a controlled visual-quality
+  // benchmark against gpt-image-1 and the Google Nano Banana candidates
+  // (scripts/visual-provider-benchmark.ts); publishable quality, promoted
+  // to the real Visual Director runtime. Still fully overridable via
+  // OPENAI_IMAGE_MODEL (e.g. to roll back to gpt-image-1) — set it
+  // explicitly only once the replacement model is itself confirmed to
+  // work and its pricing (lib/agent/pricing.ts) has been verified against
+  // live OpenAI billing.
+  imageModel: () => process.env.OPENAI_IMAGE_MODEL || "gpt-image-2",
   ownerEmail: () => process.env.OWNER_EMAIL || null,
 };

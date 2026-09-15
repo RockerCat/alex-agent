@@ -18,11 +18,11 @@ import type { UsageTokens } from "@/lib/agent/pricing";
 // shape. No image-editing/variation/streaming capability is used here
 // — text-prompt generation only.
 //
-// Capability is opt-in only (env.imageModel(), lib/env.ts) — absent
-// means generative strategies are unavailable, and callers must never
-// fabricate a result: imageGenerationCapabilityAvailable() must be
-// checked before the Visual Director is even told generative strategies
-// exist, and generate() must only ever be called after a real
+// Capability is model-gated (env.imageModel(), lib/env.ts) — defaults to
+// gpt-image-2 but can be disabled by setting OPENAI_IMAGE_MODEL="".
+// Callers must never fabricate a result: imageGenerationCapabilityAvailable()
+// must be checked before the Visual Director is even told generative
+// strategies exist, and generate() must only ever be called after a real
 // BudgetGuard.checkBeforeCall() pass (see lib/agent/assetGenerator.ts).
 
 // Fixed, non-configurable size/quality: keeps the pre-call budget

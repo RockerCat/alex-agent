@@ -14,6 +14,11 @@
  *
  * Run with:
  *   npx tsx scripts/visual-provider-benchmark.ts
+ *
+ * Pass --google-only to run ONLY the two Google candidates (0 OpenAI
+ * calls, OpenAI code path never entered) and merge their results into
+ * any existing results.json, preserving a prior OpenAI result as-is:
+ *   npx tsx scripts/visual-provider-benchmark.ts --google-only
  */
 
 import { writeFile, mkdir, readFile } from "node:fs/promises";
@@ -101,6 +106,17 @@ interface CandidateResult {
 
 function sha256(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+// Reads a prior results.json (if any) so --google-only can preserve the
+// existing OpenAI candidate instead of dropping it from the merged file.
+async function loadExistingResults(): Promise<{ candidates?: CandidateResult[] } | null> {
+  try {
+    const raw = await readFile(path.join(OUT_DIR, "results.json"), "utf-8");
+    return JSON.parse(raw) as { candidates?: CandidateResult[] };
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeError(err: unknown): string {
@@ -246,12 +262,15 @@ async function runGeminiImageModel(
 async function main() {
   await loadEnvLocal();
 
+  const googleOnly = process.argv.includes("--google-only");
+
   const hasOpenAiKey = Boolean(process.env.OPENAI_API_KEY);
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
   console.log("=== Env check (no secret values printed) ===");
   console.log("OPENAI_API_KEY present:", hasOpenAiKey);
   console.log("GEMINI_API_KEY present:", hasGeminiKey);
-  if (!hasOpenAiKey) throw new Error("OPENAI_API_KEY is not set — refusing to proceed.");
+  console.log("Mode:", googleOnly ? "--google-only (0 OpenAI calls; 2 Google candidates only)" : "full benchmark (3 providers)");
+  if (!googleOnly && !hasOpenAiKey) throw new Error("OPENAI_API_KEY is not set — refusing to proceed.");
   if (!hasGeminiKey) throw new Error("GEMINI_API_KEY is not set — refusing to proceed.");
 
   await mkdir(OUT_DIR, { recursive: true });
@@ -260,9 +279,21 @@ async function main() {
   console.log("\n=== Shared prompt (identical for all three providers) ===");
   console.log(prompt);
 
-  console.log("\n=== Calling OpenAI gpt-image-2 (1 call) ===");
-  const openaiResult = await runOpenAiGptImage2(prompt);
-  console.log(openaiResult.success ? "SUCCESS" : `FAILED: ${openaiResult.error}`);
+  let openaiResult: CandidateResult | null;
+  if (googleOnly) {
+    const existing = await loadExistingResults();
+    const preserved = existing?.candidates?.find((c) => c.provider === "openai") ?? null;
+    console.log(
+      preserved
+        ? "\n=== Skipping OpenAI gpt-image-2 (--google-only): preserving existing result from results.json ==="
+        : "\n=== Skipping OpenAI gpt-image-2 (--google-only): no prior result found to preserve ==="
+    );
+    openaiResult = preserved;
+  } else {
+    console.log("\n=== Calling OpenAI gpt-image-2 (1 call) ===");
+    openaiResult = await runOpenAiGptImage2(prompt);
+    console.log(openaiResult.success ? "SUCCESS" : `FAILED: ${openaiResult.error}`);
+  }
 
   console.log("\n=== Calling Google gemini-3.1-flash-image / Nano Banana 2 (1 call) ===");
   const nanoBanana2Result = await runGeminiImageModel("gemini-3.1-flash-image", prompt, "nano-banana-2");
@@ -272,10 +303,13 @@ async function main() {
   const nanoBananaProResult = await runGeminiImageModel("gemini-3-pro-image", prompt, "nano-banana-pro");
   console.log(nanoBananaProResult.success ? "SUCCESS" : `FAILED: ${nanoBananaProResult.error}`);
 
-  const candidates = [openaiResult, nanoBanana2Result, nanoBananaProResult];
+  const candidates = [openaiResult, nanoBanana2Result, nanoBananaProResult].filter(
+    (c): c is CandidateResult => c !== null
+  );
 
   const results = {
     generatedAt: new Date().toISOString(),
+    mode: googleOnly ? "google-only" : "full",
     aspectTarget: ASPECT_TARGET,
     renderer: { renderAssetVersion: RENDER_ASSET_VERSION, strategy: "generated_photo" },
     creativeBrief: CREATIVE_BRIEF,

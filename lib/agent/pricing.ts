@@ -35,6 +35,16 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
   // OPENAI_IMAGE_MODEL in production, same posture already required for
   // OPENAI_PLANNER_MODEL/OPENAI_EXECUTOR_MODEL (see lib/env.ts).
   "gpt-image-1": { inputPerMillion: 5.0, cachedInputPerMillion: 5.0, outputPerMillion: 40.0 },
+  // gpt-image-2 — promoted to lib/env.ts's default OPENAI_IMAGE_MODEL after
+  // the controlled visual-provider benchmark. Officially verified rates:
+  // text input $5.00/1M, cached text input $1.25/1M, image output $30.00/1M.
+  // OpenAI also publishes separate image-input ($8.00/1M) / cached-image-input
+  // ($2.00/1M) rates, but this table has no modality-specific input field and
+  // imageGenerationClient.ts only ever sends a text prompt (no image-as-input
+  // calls), so those two rates don't apply to this codebase's usage and are
+  // deliberately not represented here — same precedent as the gpt-image-1
+  // entry above.
+  "gpt-image-2": { inputPerMillion: 5.0, cachedInputPerMillion: 1.25, outputPerMillion: 30.0 },
 };
 
 // Conservative fallback for a model id not present in the table above —
