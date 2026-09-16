@@ -249,4 +249,71 @@ describe("planValidator", () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes("already exists"))).toBe(true);
   });
+
+  // Boundary D — defense in depth against an already-expired active
+  // plan (runMarketingCycle deterministically completes it before the
+  // Planner is ever invoked; this is the secondary guard for any other
+  // caller of validatePlannerOutput). Real incident dates: SolarDesk's
+  // ACTIVATION plan ran 2026-09-09 -> 2026-09-16.
+  function expiringPlanContext() {
+    return baseContext({
+      activePlan: {
+        id: "plan-1",
+        brand: "solardesk",
+        period_start: "2026-09-09",
+        period_end: "2026-09-16",
+        primary_objective: "ACTIVATION",
+        primary_objective_reason: "r",
+        primary_objective_success_signal: "s",
+        supporting_objectives: [],
+        strategy_summary: "s",
+        strategy_audience: "a",
+        strategy_approach: "a",
+        rationale: "r",
+        status: "active",
+        created_by_run: null,
+        created_at: "2026-09-09T00:00:00Z",
+      },
+    });
+  }
+
+  it("rejects CONTINUE_EXISTING_PLAN when the active plan's period has already ended (period_end < today)", () => {
+    const output = createPlanOutput({
+      decision: "CONTINUE_EXISTING_PLAN",
+      content: [
+        {
+          purpose: "activation",
+          channel: "instagram",
+          format: "carousel",
+          topic: "Nueva pieza",
+          audience: "aud",
+          cta: "cta",
+          targetDate: "2026-09-16",
+        },
+      ],
+    });
+    const result = validatePlannerOutput(output, expiringPlanContext(), "2026-09-17");
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("already ended"))).toBe(true);
+  });
+
+  it("does NOT reject CONTINUE_EXISTING_PLAN merely because today is the plan's last day (period_end === today)", () => {
+    const output = createPlanOutput({
+      decision: "CONTINUE_EXISTING_PLAN",
+      content: [
+        {
+          purpose: "activation",
+          channel: "instagram",
+          format: "carousel",
+          topic: "Nueva pieza",
+          audience: "aud",
+          cta: "cta",
+          targetDate: "2026-09-16",
+        },
+      ],
+    });
+    const result = validatePlannerOutput(output, expiringPlanContext(), "2026-09-16");
+    expect(result.valid).toBe(true);
+    expect(result.errors.some((e) => e.includes("already ended"))).toBe(false);
+  });
 });

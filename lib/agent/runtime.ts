@@ -135,6 +135,36 @@ async function acquireRunLock(
   return { run: data, concurrent: false };
 }
 
+/**
+ * Deterministic calendar fact, never an LLM decision: an `active` plan
+ * whose period has genuinely ended (period_end < todayIso — the final
+ * day of the period, period_end === todayIso, still counts as active
+ * for that whole calendar day) is completed before the Planner is
+ * ever invoked for this run. Only ever touches a plan currently
+ * `active` — a `completed`/`superseded` plan is left untouched — and
+ * never mutates its content/drafts/history.
+ *
+ * This must fail closed, not best-effort: if the update itself errors,
+ * runMarketingCycle must NOT proceed to loadAgentContext()/the Planner
+ * with potentially stale "active" state for an already-expired plan.
+ * Throwing here is caught by runMarketingCycle's existing try/catch,
+ * which fails the run through its normal finalization path — no
+ * Planner call happens, and no new plan can be created this run. A
+ * later manual "Run Marketing Cycle" simply retries this same step.
+ */
+async function completeExpiredPlans(db: SupabaseClient<Database>, brand: string, todayIso: string): Promise<void> {
+  const { error } = await db
+    .from("marketing_plans")
+    .update({ status: "completed" })
+    .eq("brand", brand)
+    .eq("status", "active")
+    .lt("period_end", todayIso);
+
+  if (error) {
+    throw new Error(`Unable to complete expired marketing plans: ${error.message}`);
+  }
+}
+
 async function finishRun(
   db: SupabaseClient<Database>,
   runId: string,
@@ -165,9 +195,12 @@ export async function runMarketingCycle(params: {
   aiClient: AiClient;
   brand: SupportedBrand;
   trigger?: RunTrigger;
+  /** Injection seam for deterministic lifecycle tests only — production always omits this and derives today's real UTC calendar date. */
+  todayIso?: string;
 }): Promise<MarketingCycleResult> {
   const { db, aiClient, brand } = params;
   const trigger = params.trigger ?? "manual";
+  const todayIso = params.todayIso ?? new Date().toISOString().slice(0, 10);
 
   await recoverStaleRuns(db, brand);
 
@@ -194,6 +227,13 @@ export async function runMarketingCycle(params: {
   }
 
   try {
+    // Lifecycle correctness comes before strategy: complete any plan
+    // whose period has genuinely ended BEFORE loading the state the
+    // Planner will reason over, so an expired plan is never handed to
+    // the Planner as "active" in the first place (see
+    // completeExpiredPlans above).
+    await completeExpiredPlans(db, brand, todayIso);
+
     const { data: settings, error: settingsError } = await db
       .from("agent_settings")
       .select("*")
@@ -204,7 +244,6 @@ export async function runMarketingCycle(params: {
     const budgetGuard = new BudgetGuard(db);
     const budgetSnapshot = await budgetGuard.getSnapshot();
     const context = await loadAgentContext(db, brand);
-    const todayIso = new Date().toISOString().slice(0, 10);
 
     const preflight = runPreflight({
       context,

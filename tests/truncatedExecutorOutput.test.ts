@@ -188,7 +188,7 @@ describe("I5 — budget applies to a retry after an incomplete response", () => 
     const aiClient = new ScriptedAiClient([], [carouselExecutorOutput()]);
     aiClient.incompleteExecutorReasons = ["max_output_tokens"];
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(aiClient.plannerCalls).toHaveLength(0);
     // Only the first (incomplete) Executor call happened; the retry was blocked by budget.

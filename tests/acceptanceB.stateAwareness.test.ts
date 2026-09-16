@@ -64,7 +64,7 @@ describe("Acceptance B — State Awareness / Duplicate Prevention", () => {
     const db = asSupabaseClient<SupabaseClient<Database>>(fake);
     const aiClient = new ScriptedAiClient([], []);
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("skipped");
     expect(run.decision).toBe("WAIT_FOR_APPROVAL");

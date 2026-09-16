@@ -89,7 +89,7 @@ describe("CONTINUE_EXISTING_PLAN vs NO_ACTION", () => {
 
     const aiClient = new ScriptedAiClient([emptyContinuePlan, noActionPlan], []);
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(run.decision).toBe("NO_ACTION");
@@ -116,7 +116,7 @@ describe("CONTINUE_EXISTING_PLAN vs NO_ACTION", () => {
     // MAX_PLANNER_CALLS_PER_RUN is 2 — both attempts are the invalid, empty decision.
     const aiClient = new ScriptedAiClient([emptyContinuePlan, emptyContinuePlan], []);
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(aiClient.plannerCalls).toHaveLength(2);
     expect(run.status).toBe("failed");
@@ -132,7 +132,7 @@ describe("CONTINUE_EXISTING_PLAN vs NO_ACTION", () => {
 
     const aiClient = new ScriptedAiClient([noActionPlan], []);
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(run.decision).toBe("NO_ACTION");
@@ -165,7 +165,7 @@ describe("CONTINUE_EXISTING_PLAN vs NO_ACTION", () => {
 
     const aiClient = new ScriptedAiClient([continuePlanWithWork], [carouselExecutorOutput()]);
 
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(run.decision).toBe("CONTINUE_EXISTING_PLAN");

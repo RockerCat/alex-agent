@@ -88,7 +88,8 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
 
   constructor(
     private table: string,
-    private store: Map<string, Row[]>
+    private store: Map<string, Row[]>,
+    private failNextUpdateByTable: Map<string, string>
   ) {}
 
   select() {
@@ -172,6 +173,13 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
     }
 
     if (this.mode === "update") {
+      const failMessage = this.failNextUpdateByTable.get(this.table);
+      if (failMessage) {
+        // One-shot fault injection (see FakeDb.failNextUpdate) — cleared
+        // immediately so it never masks a later, unrelated update.
+        this.failNextUpdateByTable.delete(this.table);
+        return { data: null as T, error: { message: failMessage } };
+      }
       const rows = this.rows();
       const matched = rows.filter((r) => matchesFilters(r, this.filters));
       for (const r of matched) Object.assign(r, this.payload);
@@ -211,9 +219,10 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
 
 export class FakeDb {
   private store = new Map<string, Row[]>();
+  private failNextUpdateByTable = new Map<string, string>();
 
   from(table: string) {
-    return new FakeQueryBuilder(table, this.store);
+    return new FakeQueryBuilder(table, this.store, this.failNextUpdateByTable);
   }
 
   seed(table: string, rows: Row[]) {
@@ -222,6 +231,16 @@ export class FakeDb {
 
   getAll(table: string): Row[] {
     return (this.store.get(table) ?? []).map((r) => ({ ...r }));
+  }
+
+  /**
+   * Test-only fault injection: the next UPDATE against `table` returns
+   * this error instead of applying, then clears (one-shot) — for
+   * proving fail-closed behavior (e.g. completeExpiredPlans in
+   * lib/agent/runtime.ts) without a real Supabase failure.
+   */
+  failNextUpdate(table: string, message = "Simulated database failure.") {
+    this.failNextUpdateByTable.set(table, message);
   }
 }
 

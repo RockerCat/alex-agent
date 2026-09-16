@@ -64,6 +64,19 @@ export function validatePlannerOutput(
     errors.push("CONTINUE_EXISTING_PLAN was returned but no active plan exists");
   }
 
+  // Defense in depth: runMarketingCycle already deterministically
+  // completes an active plan whose period has genuinely ended
+  // (period_end < todayIso) before the Planner is ever invoked for
+  // this same run, so context.activePlan here should never already be
+  // expired in practice. This guard exists for any other caller of
+  // validatePlannerOutput that might skip that step. period_end ===
+  // todayIso is still the plan's last active day, not expired.
+  if (output.decision === "CONTINUE_EXISTING_PLAN" && context.activePlan && context.activePlan.period_end < todayIso) {
+    errors.push(
+      `CONTINUE_EXISTING_PLAN was returned but the active plan's period already ended (period_end ${context.activePlan.period_end} < today ${todayIso}) — it should already have been completed`
+    );
+  }
+
   if (output.decision === "CREATE_PLAN" && context.activePlan) {
     errors.push("CREATE_PLAN was returned but an active plan already exists — use CONTINUE_EXISTING_PLAN or NO_ACTION");
   }

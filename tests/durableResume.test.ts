@@ -172,7 +172,7 @@ describe("H8 — lock conflict does not orphan blocked work", () => {
 
     // Alex clicks Run Marketing Cycle.
     const cycleAiClient = new ScriptedAiClient([], [carouselExecutorOutput({ title: "resolved" })]);
-    const { run } = await runMarketingCycle({ db, aiClient: cycleAiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient: cycleAiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(cycleAiClient.plannerCalls).toHaveLength(0);
@@ -219,7 +219,7 @@ describe("H9 — a technical resume failure is retryable, not fatal", () => {
 
     // A later marketing cycle retries it successfully.
     const retryAiClient = new ScriptedAiClient([], [carouselExecutorOutput({ title: "recovered" })]);
-    const { run } = await runMarketingCycle({ db, aiClient: retryAiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient: retryAiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(retryAiClient.plannerCalls).toHaveLength(0);
@@ -250,7 +250,7 @@ describe("H10 — resumable work outranks WAIT_FOR_APPROVAL", () => {
     const db = asSupabaseClient<SupabaseClient<Database>>(fake);
 
     const aiClient = new ScriptedAiClient([], [carouselExecutorOutput({ title: "Comienza gratis en SolarDesk" })]);
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("completed");
     expect(run.decision).not.toBe("WAIT_FOR_APPROVAL");
@@ -264,7 +264,7 @@ describe("H10 — resumable work outranks WAIT_FOR_APPROVAL", () => {
     // A subsequent wake, with nothing left resumable, must correctly
     // report WAIT_FOR_APPROVAL — with zero AI calls of any kind.
     const secondAiClient = new ScriptedAiClient([], []);
-    const { run: secondRun } = await runMarketingCycle({ db, aiClient: secondAiClient, brand: "solardesk" });
+    const { run: secondRun } = await runMarketingCycle({ db, aiClient: secondAiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(secondRun.status).toBe("skipped");
     expect(secondRun.decision).toBe("WAIT_FOR_APPROVAL");
@@ -288,7 +288,7 @@ describe("H11 — an unanswered blocker is never auto-resumed", () => {
     const db = asSupabaseClient<SupabaseClient<Database>>(fake);
 
     const aiClient = new ScriptedAiClient([], []);
-    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("skipped");
     expect(run.decision).toBe("WAIT_FOR_APPROVAL");
@@ -326,7 +326,7 @@ describe("H12 — a budget-blocked resume remains durable", () => {
     const db = asSupabaseClient<SupabaseClient<Database>>(fake);
 
     const blockedAiClient = new ScriptedAiClient([], [carouselExecutorOutput()]);
-    const { run } = await runMarketingCycle({ db, aiClient: blockedAiClient, brand: "solardesk" });
+    const { run } = await runMarketingCycle({ db, aiClient: blockedAiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(run.status).toBe("skipped");
     expect(run.decision).toBe("BUDGET_BLOCKED");
@@ -341,7 +341,7 @@ describe("H12 — a budget-blocked resume remains durable", () => {
     // a later retry completes the exact same resumable work.
     await db.from("agent_settings").update({ monthly_budget_usd: 50.0 }).eq("singleton", true);
     const retryAiClient = new ScriptedAiClient([], [carouselExecutorOutput({ title: "resolved after budget freed up" })]);
-    const { run: secondRun } = await runMarketingCycle({ db, aiClient: retryAiClient, brand: "solardesk" });
+    const { run: secondRun } = await runMarketingCycle({ db, aiClient: retryAiClient, brand: "solardesk", todayIso: "2026-09-10" });
 
     expect(secondRun.status).toBe("completed");
     expect(retryAiClient.plannerCalls).toHaveLength(0);
