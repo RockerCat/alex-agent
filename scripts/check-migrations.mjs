@@ -109,6 +109,29 @@ async function main() {
   if (!assetVersionBlocked) throw new Error("Expected unique index to block a duplicate (draft_id, asset_version)");
   console.log("OK: content_assets (draft_id, asset_version) unique index enforced");
 
+  // Exercise the asset_publications (asset_id, channel) unique index —
+  // the actual concurrency guarantee for "never double-publish the same
+  // asset to the same channel" (Facebook manual publishing checkpoint 1).
+  const asset = await db.query("select id from content_assets limit 1;");
+  const assetId = asset.rows[0].id;
+  await db.query(
+    `insert into asset_publications (asset_id, draft_id, brand, channel, status)
+     values ($1, $2, 'solardesk', 'facebook', 'publishing');`,
+    [assetId, draftId]
+  );
+  let publicationBlocked = false;
+  try {
+    await db.query(
+      `insert into asset_publications (asset_id, draft_id, brand, channel, status)
+       values ($1, $2, 'solardesk', 'facebook', 'publishing');`,
+      [assetId, draftId]
+    );
+  } catch (err) {
+    publicationBlocked = /asset_publications_asset_id_channel_key|duplicate key/.test(String(err));
+  }
+  if (!publicationBlocked) throw new Error("Expected unique index to block a duplicate (asset_id, channel) publication");
+  console.log("OK: asset_publications (asset_id, channel) unique index enforced");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

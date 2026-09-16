@@ -42,4 +42,20 @@ export const env = {
   // live OpenAI billing.
   imageModel: () => process.env.OPENAI_IMAGE_MODEL || "gpt-image-2",
   ownerEmail: () => process.env.OWNER_EMAIL || null,
+  // Facebook manual publishing (AlexAgent v0.2 checkpoint 1). Nullable
+  // (not `required()`) on purpose: publishing is a manually-triggered
+  // action, not something every code path needs, so a missing value
+  // must surface as a safe "Facebook publishing is not configured"
+  // result from lib/agent/publish.ts — never an uncaught throw at
+  // import time. Server-side only; never expose via NEXT_PUBLIC_*.
+  //
+  // `.trim()`: defensive credential hygiene only — env values can pick
+  // up incidental leading/trailing whitespace depending on how they
+  // were set. This was NOT the cause of any specific incident; the one
+  // real failed-smoke root cause found during this checkpoint was a
+  // `.env.local` Page Access Token that simply held a different token
+  // than the one validated manually (confirmed via SHA-256 hash
+  // comparison, fixed by correcting the value) — see PROJECT_STATUS.md.
+  metaFacebookPageAccessToken: () => process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN?.trim() || null,
+  metaFacebookPageId: () => process.env.META_FACEBOOK_PAGE_ID?.trim() || null,
 };

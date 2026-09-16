@@ -5,6 +5,7 @@ import { DraftActions } from "@/components/DraftActions";
 import { AssetPanel } from "@/components/AssetPanel";
 import { listAssets } from "@/lib/agent/assetGenerator";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
+import { getPublication } from "@/lib/agent/publish";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
     latestAsset?.storage_path
       ? await new SupabaseAssetStorage(db).createSignedUrl(latestAsset.storage_path, 3600)
       : null;
+  const publication = latestAsset ? await getPublication(db, latestAsset.id) : null;
 
   return (
     <div className="space-y-4">
@@ -136,7 +138,14 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
       {assetEligible && (
         <Card>
           <h2 className="font-medium mb-3">Asset (image post)</h2>
-          <AssetPanel draftId={draft.id} asset={latestAsset} previewUrl={previewUrl} history={assets.slice(1)} />
+          <AssetPanel
+            draftId={draft.id}
+            draftChannel={draft.channel}
+            asset={latestAsset}
+            previewUrl={previewUrl}
+            history={assets.slice(1)}
+            publication={publication}
+          />
         </Card>
       )}
 

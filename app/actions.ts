@@ -12,6 +12,8 @@ import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
+import { publishAssetToFacebook } from "@/lib/agent/publish";
+import { MetaGraphFacebookClient } from "@/lib/agent/facebookClient";
 import type { FeedbackCategory } from "@/lib/agent/constants";
 
 async function assertAuthorized() {
@@ -117,6 +119,23 @@ export async function requestAssetChangesAction(draftId: string, feedback: strin
   const storage = new SupabaseAssetStorage(db);
   const aiClient = new OpenAiClient();
   const result = await requestAssetChanges({ db, storage, aiClient, draftId, feedback });
+  revalidatePath(`/approvals/${draftId}`);
+  return result;
+}
+
+// Manual-only, Facebook-only (AlexAgent v0.2 checkpoint 1): exists
+// solely so Alex can explicitly click "Publish to Facebook" on a
+// Ready-to-publish image_post asset. Never invoked automatically —
+// there is no cron/heartbeat/autopublish path anywhere in this app.
+// All eligibility/idempotency checks happen server-side in
+// lib/agent/publish.ts; the UI confirmation step is a courtesy, not
+// the safety boundary.
+export async function publishAssetToFacebookAction(draftId: string, assetId: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const storage = new SupabaseAssetStorage(db);
+  const facebookClient = new MetaGraphFacebookClient();
+  const result = await publishAssetToFacebook({ db, storage, facebookClient, draftId, assetId });
   revalidatePath(`/approvals/${draftId}`);
   return result;
 }

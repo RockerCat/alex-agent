@@ -36,6 +36,10 @@ function checkUniqueConstraints(table: string, candidate: Row, existing: Row[]):
     const clash = existing.some((r) => r.draft_id === candidate.draft_id && r.asset_version === candidate.asset_version);
     if (clash) return `duplicate key value violates unique constraint "content_assets_draft_id_asset_version_key"`;
   }
+  if (table === "asset_publications") {
+    const clash = existing.some((r) => r.asset_id === candidate.asset_id && r.channel === candidate.channel);
+    if (clash) return `duplicate key value violates unique constraint "asset_publications_asset_id_channel_key"`;
+  }
   return null;
 }
 
@@ -58,6 +62,14 @@ function defaultsForTable(table: string): Row {
         render_provenance: {},
         error_message: null,
         approved_at: null,
+      };
+    case "asset_publications":
+      return {
+        status: "publishing",
+        meta_post_id: null,
+        published_at: null,
+        error_message: null,
+        updated_at: nowIso(),
       };
     default:
       return {};

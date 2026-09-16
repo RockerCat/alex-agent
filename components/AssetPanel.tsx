@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { generateAssetAction, approveAssetAction, requestAssetChangesAction } from "@/app/actions";
-import type { ContentAssetRow } from "@/lib/types/database";
+import { generateAssetAction, approveAssetAction, requestAssetChangesAction, publishAssetToFacebookAction } from "@/app/actions";
+import type { ContentAssetRow, AssetPublicationRow, Channel } from "@/lib/types/database";
 import type { AssetFeedbackInterpretationSummary } from "@/lib/agent/assetRevision";
 import type { VisualStrategy } from "@/lib/agent/schemas";
 
@@ -44,14 +44,18 @@ const STATUS_COLOR: Record<ContentAssetRow["status"], { bg: string; fg: string }
 
 export function AssetPanel({
   draftId,
+  draftChannel,
   asset,
   previewUrl,
   history,
+  publication,
 }: {
   draftId: string;
+  draftChannel: Channel;
   asset: ContentAssetRow | null;
   previewUrl: string | null;
   history: ContentAssetRow[];
+  publication: AssetPublicationRow | null;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -59,6 +63,8 @@ export function AssetPanel({
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [interpretation, setInterpretation] = useState<AssetFeedbackInterpretationSummary | null>(null);
+  const [showPublishConfirm, setShowPublishConfirm] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
 
   function generate() {
     setError(null);
@@ -115,6 +121,24 @@ export function AssetPanel({
         router.refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not create a revision from that feedback.");
+      }
+    });
+  }
+
+  function publish() {
+    if (!asset) return;
+    setPublishError(null);
+    startTransition(async () => {
+      try {
+        const result = await publishAssetToFacebookAction(draftId, asset.id);
+        if (result.status !== "success") {
+          setPublishError(result.message ?? "Could not publish to Facebook.");
+        } else {
+          setShowPublishConfirm(false);
+        }
+        router.refresh();
+      } catch (err) {
+        setPublishError(err instanceof Error ? err.message : "Could not publish to Facebook.");
       }
     });
   }
@@ -187,6 +211,17 @@ export function AssetPanel({
             );
           })()}
 
+          {asset.status === "ready_to_publish" && publication?.status === "published" && (
+            <div className="rounded-md border p-3 text-sm" style={{ borderColor: "#16a34a", background: "#f0fdf4" }}>
+              <p className="font-semibold" style={{ color: "#166534" }}>
+                Published to Facebook
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                Post {publication.meta_post_id} · {publication.published_at ? new Date(publication.published_at).toLocaleString() : ""}
+              </p>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2">
             {asset.status === "pending_review" && (
               <button
@@ -197,6 +232,17 @@ export function AssetPanel({
                 style={{ background: "#16a34a", color: "white" }}
               >
                 Approve Asset
+              </button>
+            )}
+            {asset.status === "ready_to_publish" && draftChannel === "facebook" && publication?.status !== "published" && (
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() => setShowPublishConfirm((v) => !v)}
+                className="rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                style={{ background: "#1877F2", color: "white" }}
+              >
+                Publish to Facebook
               </button>
             )}
             {(asset.status === "pending_review" || asset.status === "ready_to_publish") && (
@@ -220,6 +266,36 @@ export function AssetPanel({
               {isPending ? "Regenerating…" : "Regenerate"}
             </button>
           </div>
+
+          {showPublishConfirm && asset.status === "ready_to_publish" && draftChannel === "facebook" && publication?.status !== "published" && (
+            <div className="rounded-md border p-3 space-y-2" style={{ borderColor: "#1877F2" }}>
+              <p className="text-sm font-medium">Publish this exact image and caption to the SolarDesk Facebook page now?</p>
+              <p className="text-xs" style={{ color: "var(--muted)" }}>
+                This creates a real, public post on Facebook. It cannot be undone from here.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={publish}
+                  className="rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                  style={{ background: "#1877F2", color: "white" }}
+                >
+                  {isPending ? "Publishing…" : "Confirm & Publish to Facebook"}
+                </button>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => setShowPublishConfirm(false)}
+                  className="rounded-md border px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {publishError && <p className="text-sm text-red-600">{publishError}</p>}
+            </div>
+          )}
 
           {showFeedbackForm && (asset.status === "pending_review" || asset.status === "ready_to_publish") && (
             <div className="rounded-md border p-3 space-y-2" style={{ borderColor: "var(--border)" }}>

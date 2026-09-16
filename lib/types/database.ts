@@ -176,6 +176,23 @@ export type ContentAssetRow = {
   approved_at: string | null;
 }
 
+export type PublicationChannel = "facebook";
+export type PublicationStatus = "publishing" | "published" | "failed";
+
+export type AssetPublicationRow = {
+  id: string;
+  asset_id: string;
+  draft_id: string;
+  brand: string;
+  channel: PublicationChannel;
+  status: PublicationStatus;
+  meta_post_id: string | null;
+  published_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type AiUsageRow = {
   id: string;
   agent_run_id: string | null;
@@ -209,6 +226,7 @@ export type Database = {
       content_drafts: TableDef<ContentDraftRow>;
       content_revisions: TableDef<ContentRevisionRow>;
       content_assets: TableDef<ContentAssetRow>;
+      asset_publications: TableDef<AssetPublicationRow>;
       agent_questions: TableDef<AgentQuestionRow>;
       ai_usage: TableDef<AiUsageRow>;
     };
