@@ -28,7 +28,12 @@ export interface DashboardData {
   }[];
 }
 
-export async function loadDashboardData(db: SupabaseClient<Database>): Promise<DashboardData> {
+export async function loadDashboardData(
+  db: SupabaseClient<Database>,
+  // Injection seam for deterministic tests only — production always
+  // omits this and derives today's real UTC calendar date.
+  todayIsoOverride?: string
+): Promise<DashboardData> {
   const brand = "solardesk";
 
   const { data: settings } = await db.from("agent_settings").select("*").eq("singleton", true).single();
@@ -48,6 +53,13 @@ export async function loadDashboardData(db: SupabaseClient<Database>): Promise<D
     .eq("brand", brand)
     .eq("status", "active")
     .maybeSingle();
+
+  // Mirror the fail-closed period_end semantics from completeExpiredPlans
+  // (lib/agent/runtime.ts) for display only: period_end === today is still
+  // current for the day, period_end < today is stale until the next
+  // Marketing Cycle run actually completes it. This never writes to the DB.
+  const todayIso = todayIsoOverride ?? new Date().toISOString().slice(0, 10);
+  const currentPlan = plan && plan.period_end >= todayIso ? plan : null;
 
   const { data: pendingDrafts } = await db
     .from("content_drafts")
@@ -78,13 +90,13 @@ export async function loadDashboardData(db: SupabaseClient<Database>): Promise<D
     status,
     settings: { solardeskEnabled: Boolean(settings?.solardesk_enabled) },
     budget,
-    activePlan: plan
+    activePlan: currentPlan
       ? {
-          id: plan.id,
-          primaryObjective: plan.primary_objective,
-          strategySummary: plan.strategy_summary,
-          periodStart: plan.period_start,
-          periodEnd: plan.period_end,
+          id: currentPlan.id,
+          primaryObjective: currentPlan.primary_objective,
+          strategySummary: currentPlan.strategy_summary,
+          periodStart: currentPlan.period_start,
+          periodEnd: currentPlan.period_end,
         }
       : null,
     pendingDraftsCount: (pendingDrafts ?? []).length,

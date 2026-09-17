@@ -69,9 +69,12 @@ export default async function DashboardPage() {
             </p>
           </div>
         ) : (
-          <p className="text-sm" style={{ color: "var(--muted)" }}>
-            No active marketing plan. Run the marketing cycle to let AlexAgent decide what&rsquo;s next.
-          </p>
+          <div className="space-y-1">
+            <p className="text-sm font-medium">No current cycle</p>
+            <p className="text-sm" style={{ color: "var(--muted)" }}>
+              AlexAgent will decide what should happen next the next time the marketing cycle runs.
+            </p>
+          </div>
         )}
       </Card>
 
