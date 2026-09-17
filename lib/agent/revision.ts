@@ -72,8 +72,11 @@ export async function resumeDraftCore(params: {
         previousContent: {
           title: draft.title,
           hook: draft.hook,
+          slides: draft.body?.slides ?? null,
           caption: draft.caption,
           cta: draft.cta_text,
+          visualDirection: draft.visual_direction,
+          hashtags: draft.hashtags ?? null,
         },
       }
     : undefined;

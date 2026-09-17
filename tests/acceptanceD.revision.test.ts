@@ -109,6 +109,13 @@ describe("Acceptance D — Revision Workflow", () => {
     expect(revisions[1].feedback_category).toBe("weak_hook");
 
     expect(aiClient.executorCalls[0].userPrompt).toContain("Revision requested");
+    // Real production incident (2026-09-17): previousContent used to
+    // supply only title/hook/caption/cta, so the revision model had no
+    // way to preserve slides/visual_direction/hashtags it wasn't asked
+    // to change. Confirm resumeDraftCore now threads all of them through.
+    expect(aiClient.executorCalls[0].userPrompt).toContain("v1"); // draft-1's visual_direction
+    expect(aiClient.executorCalls[0].userPrompt).toContain("#solar"); // draft-1's hashtags
+    expect(aiClient.executorCalls[0].userPrompt).toContain("..."); // draft-1's slide text
   });
 
   it("refuses to revise a draft that is not pending_approval", async () => {

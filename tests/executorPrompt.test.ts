@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildExecutorPrompt } from "@/lib/agent/executor";
+import { buildExecutorPrompt, type RevisionInstruction } from "@/lib/agent/executor";
 import type { AgentContext } from "@/lib/agent/contextLoader";
 import type { ContentBrief } from "@/lib/agent/schemas";
 
@@ -60,5 +60,53 @@ describe("Executor system prompt — Channel Content Rules v1", () => {
     expect(system).toMatch(/coordinates/i);
     expect(system).toMatch(/pixel measurements/i);
     expect(system).toMatch(/Visual Director/);
+  });
+});
+
+// Real production incident (2026-09-17): a narrow revision note asking
+// only to fix a corrupted `purpose` string could never succeed (purpose
+// is brief-level, not revision-editable output) and a separate narrow
+// hook-only feedback request also caused unrelated fields to be
+// regenerated. These checks confirm the minimal prompt/context fix in
+// lib/agent/executor.ts actually reached the revision-call prompt.
+
+const revisionInstruction: RevisionInstruction = {
+  category: "weak_hook",
+  note: "The hook doesn't grab attention",
+  previousContent: {
+    title: "Título original",
+    hook: "Hook original débil",
+    slides: [{ slide: 1, text: "Slide original" }],
+    caption: "Caption original",
+    cta: "CTA original",
+    visualDirection: "Visual direction original",
+    hashtags: ["#solar"],
+  },
+};
+
+describe("Executor revision prompt — narrow-feedback preservation and brief boundary", () => {
+  const { user } = buildExecutorPrompt(context, brief, revisionInstruction);
+
+  it("instructs the model to preserve unrelated, still-valid previous fields on narrow feedback", () => {
+    expect(user).toMatch(/keep the previous version's fields that are unrelated to the requested change unchanged/i);
+    expect(user).toMatch(/never rewrite an unaffected field merely for stylistic variety/i);
+  });
+
+  it("tells the model the actual change must be reflected, not a restated previous version", () => {
+    expect(user).toMatch(/the new version must actually reflect the requested change, not merely restate the previous version/i);
+  });
+
+  it("identifies the ContentBrief as fixed context, not revision-editable output", () => {
+    expect(user).toMatch(/fixed context, not revision-editable output/i);
+    expect(user).toMatch(/your output schema has no field for it/i);
+  });
+
+  it("supplies all editable/versioned Executor-output fields as previous content, not just title/hook/caption/cta", () => {
+    expect(user).toContain('"slides"');
+    expect(user).toContain("Slide original");
+    expect(user).toContain('"visualDirection"');
+    expect(user).toContain("Visual direction original");
+    expect(user).toContain('"hashtags"');
+    expect(user).toContain("#solar");
   });
 });

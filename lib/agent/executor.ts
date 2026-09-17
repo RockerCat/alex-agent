@@ -6,11 +6,19 @@ import type { FeedbackCategory } from "@/lib/agent/constants";
 export interface RevisionInstruction {
   category: FeedbackCategory;
   note: string | null;
+  // All editable/versioned Executor-output fields (see
+  // lib/agent/draftValidator.ts / content_revisions) — not just the
+  // fields the feedback targets — so the model actually has the
+  // previous unaffected content in front of it to preserve rather than
+  // silently re-inventing it from the brief alone.
   previousContent: {
     title: string | null;
     hook: string | null;
+    slides: { slide: number; text: string }[] | null;
     caption: string | null;
     cta: string | null;
+    visualDirection: string | null;
+    hashtags: string[] | null;
   };
 }
 
@@ -52,9 +60,11 @@ export function buildExecutorPrompt(
       "=== Revision requested ===",
       `Feedback category: ${revision.category}`,
       revision.note ? `Feedback note: ${revision.note}` : "Feedback note: (none)",
-      "Previous version:",
+      "Previous version (title, hook, slides, caption, cta, visualDirection, hashtags):",
       JSON.stringify(revision.previousContent, null, 2),
-      "Produce a new version that addresses this feedback. Do not simply restate the previous version."
+      "Address the feedback above directly — the new version must actually reflect the requested change, not merely restate the previous version.",
+      "When the feedback is narrow, keep the previous version's fields that are unrelated to the requested change unchanged if they remain valid and still consistent with the content brief and channel/Product Truth rules — never rewrite an unaffected field merely for stylistic variety.",
+      "The Content brief above (purpose, channel, format, topic, audience, cta, targetDate) is fixed context, not revision-editable output — your output schema has no field for it, so never attempt to restate or correct it."
     );
   }
 

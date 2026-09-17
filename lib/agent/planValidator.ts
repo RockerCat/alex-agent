@@ -1,7 +1,8 @@
 import type { PlannerOutput, ContentBrief } from "@/lib/agent/schemas";
-import { plannerOutputSchema } from "@/lib/agent/schemas";
+import { plannerOutputSchema, CONTENT_BRIEF_TEXT_LIMITS } from "@/lib/agent/schemas";
 import { MAX_CONTENT_PER_CYCLE, PLAN_PERIOD_DAYS } from "@/lib/agent/constants";
 import type { AgentContext } from "@/lib/agent/contextLoader";
+import { isMechanicallyTruncated } from "@/lib/agent/mechanicalTruncation";
 
 export interface PlanValidationResult {
   valid: boolean;
@@ -29,6 +30,32 @@ function isDuplicateOfExisting(brief: ContentBrief, context: AgentContext): bool
 
 function briefKey(brief: ContentBrief): string {
   return `${brief.channel}::${brief.topic.trim().toLowerCase()}`;
+}
+
+/**
+ * ContentBrief analogue of lib/agent/draftValidator.ts's
+ * findMechanicalTruncation — same failure class (OpenAI Structured
+ * Outputs' constrained decoding force-closing a string exactly at its
+ * JSON Schema maxLength), same detection heuristic, applied to the
+ * Planner's own bounded free-text ContentBrief fields instead of the
+ * Executor's. `channel`/`format`/`targetDate` are enums/dates, not
+ * free-text, so they are not checked here.
+ */
+function findBriefMechanicalTruncation(brief: ContentBrief): string[] {
+  const problems: string[] = [];
+
+  const checkField = (label: string, text: string, limit: number) => {
+    if (isMechanicallyTruncated(text, limit)) {
+      problems.push(`${label} appears mechanically truncated at its ${limit}-character limit`);
+    }
+  };
+
+  checkField("purpose", brief.purpose, CONTENT_BRIEF_TEXT_LIMITS.purpose);
+  checkField("topic", brief.topic, CONTENT_BRIEF_TEXT_LIMITS.topic);
+  checkField("audience", brief.audience, CONTENT_BRIEF_TEXT_LIMITS.audience);
+  checkField("cta", brief.cta, CONTENT_BRIEF_TEXT_LIMITS.cta);
+
+  return problems;
 }
 
 /**
@@ -96,6 +123,11 @@ export function validatePlannerOutput(
     content = content.filter((brief) => {
       if (brief.targetDate < periodStart || brief.targetDate > periodEnd) {
         contentErrors.push(`Dropped brief "${brief.topic}": targetDate ${brief.targetDate} outside plan period ${periodStart}..${periodEnd}`);
+        return false;
+      }
+      const truncationProblems = findBriefMechanicalTruncation(brief);
+      if (truncationProblems.length > 0) {
+        contentErrors.push(`Dropped brief "${brief.topic}": ${truncationProblems.join("; ")}`);
         return false;
       }
       if (isDuplicateOfExisting(brief, context)) {

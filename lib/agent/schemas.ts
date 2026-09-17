@@ -11,13 +11,32 @@ import {
 // Planner structured output (ALEXAGENT_V0.1_SPEC.md section 9)
 // ---------------------------------------------------------------------
 
+// Named so lib/agent/planValidator.ts can apply the same mechanical-
+// truncation defense EXECUTOR_TEXT_LIMITS already gets in
+// lib/agent/draftValidator.ts (see that constant's comment for the root
+// cause: OpenAI Structured Outputs' constrained decoding force-closing a
+// string exactly at its JSON Schema `maxLength`). A real production
+// incident (2026-09-17) hit this exact fingerprint on `purpose`:
+// truncated at exactly 200 chars, mid-word. `purpose`/`cta` are widened
+// to 260 — the same target ExecutorOutput's `title`/`cta` were widened
+// to for the identical reason — to give constrained decoding real room
+// to finish a short sentence naturally. `topic`/`audience` keep their
+// existing 300-char headroom (no incident evidence there); mechanical-
+// truncation detection is still applied to them for defense in depth.
+export const CONTENT_BRIEF_TEXT_LIMITS = {
+  purpose: 260,
+  topic: 300,
+  audience: 300,
+  cta: 260,
+} as const;
+
 export const contentBriefSchema = z.object({
-  purpose: z.string().min(1).max(200),
+  purpose: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.purpose),
   channel: z.enum(ALLOWED_CHANNELS),
   format: z.enum(ALLOWED_CONTENT_TYPES),
-  topic: z.string().min(1).max(300),
-  audience: z.string().min(1).max(300),
-  cta: z.string().min(1).max(200),
+  topic: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.topic),
+  audience: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.audience),
+  cta: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.cta),
   targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD"),
 });
 export type ContentBrief = z.infer<typeof contentBriefSchema>;

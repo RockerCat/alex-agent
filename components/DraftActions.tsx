@@ -76,6 +76,11 @@ export function DraftActions({ draftId, canAct }: { draftId: string; canAct: boo
 
       {showRevisionForm && (
         <div className="rounded-md border p-3 space-y-2" style={{ borderColor: "var(--border)" }}>
+          <p className="text-xs" style={{ color: "var(--muted)" }}>
+            Request Revision rewrites this draft&rsquo;s content — hook, slides, caption, CTA text, visual
+            direction, hashtags. Purpose, Audience, Target date, and the original CTA are fixed for this draft
+            and won&rsquo;t change.
+          </p>
           <label className="text-sm font-medium block">Feedback category</label>
           <select
             value={category}

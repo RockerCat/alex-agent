@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { validatePlannerOutput } from "@/lib/agent/planValidator";
 import { createPlanOutput } from "@/tests/support/fakeAiClient";
+import { CONTENT_BRIEF_TEXT_LIMITS, type ContentBrief } from "@/lib/agent/schemas";
 import type { AgentContext } from "@/lib/agent/contextLoader";
 
 function baseContext(overrides: Partial<AgentContext> = {}): AgentContext {
@@ -315,5 +316,82 @@ describe("planValidator", () => {
     const result = validatePlannerOutput(output, expiringPlanContext(), "2026-09-16");
     expect(result.valid).toBe(true);
     expect(result.errors.some((e) => e.includes("already ended"))).toBe(false);
+  });
+});
+
+// ContentBrief mechanical-truncation defense (real production incident,
+// 2026-09-17): a Planner-authored `purpose` reached pending_approval
+// truncated at exactly its 200-char pre-fix schema ceiling, mid-word,
+// and — because purpose is brief-level, immutable context to every
+// later revision call — could never be corrected afterward. This is the
+// ContentBrief analogue of draftValidator.ts's findMechanicalTruncation,
+// applied at the same content.filter() boundary that already drops
+// out-of-range/duplicate briefs (lib/agent/planValidator.ts).
+
+function baseBrief(overrides: Partial<ContentBrief> = {}): ContentBrief {
+  return {
+    purpose: "education",
+    channel: "instagram",
+    format: "carousel",
+    topic: "Cómo crear tu primera cotización",
+    audience: "Instaladores solares en Colombia",
+    cta: "Crea tu primera cotización",
+    targetDate: "2026-09-10",
+    ...overrides,
+  };
+}
+
+/** Builds a string of exactly `len` characters ending in `tail`. */
+function exactLength(len: number, tail: string): string {
+  const filler = "a".repeat(Math.max(0, len - tail.length));
+  return (filler + tail).slice(0, len);
+}
+
+const BRIEF_TEXT_FIELDS: { field: "purpose" | "topic" | "audience" | "cta"; limit: number }[] = [
+  { field: "purpose", limit: CONTENT_BRIEF_TEXT_LIMITS.purpose },
+  { field: "topic", limit: CONTENT_BRIEF_TEXT_LIMITS.topic },
+  { field: "audience", limit: CONTENT_BRIEF_TEXT_LIMITS.audience },
+  { field: "cta", limit: CONTENT_BRIEF_TEXT_LIMITS.cta },
+];
+
+describe("planValidator — ContentBrief mechanical-truncation defense", () => {
+  it("a brief with ordinary, well-below-ceiling text passes untouched", () => {
+    const output = createPlanOutput({ content: [baseBrief()] });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(1);
+    expect(result.errors.some((e) => e.includes("truncated"))).toBe(false);
+  });
+
+  for (const { field, limit } of BRIEF_TEXT_FIELDS) {
+    it(`drops a brief whose ${field} lands exactly at its ${limit}-char ceiling with a non-terminal ending (mechanical truncation)`, () => {
+      const truncated = exactLength(limit, "x"); // ends mid-word — the real incident's fingerprint
+      const output = createPlanOutput({ content: [baseBrief({ [field]: truncated })] });
+      const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+
+      expect(result.valid).toBe(true); // dropped, not a whole-response rejection
+      expect(result.corrected!.content).toHaveLength(0);
+      expect(result.errors.some((e) => e.includes(`${field} appears mechanically truncated at its ${limit}-character limit`))).toBe(
+        true
+      );
+    });
+
+    it(`keeps a brief whose ${field} lands exactly at its ${limit}-char ceiling but ends with ordinary closing punctuation`, () => {
+      const safe = exactLength(limit, "."); // same exact length, deliberately finished thought
+      const output = createPlanOutput({ content: [baseBrief({ [field]: safe })] });
+      const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+
+      expect(result.valid).toBe(true);
+      expect(result.corrected!.content).toHaveLength(1);
+      expect(result.errors.some((e) => e.includes("truncated"))).toBe(false);
+    });
+  }
+
+  it("existing valid Planner output (no truncation anywhere) is unaffected by this defense", () => {
+    const output = createPlanOutput();
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content.length).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes("truncated"))).toBe(false);
   });
 });

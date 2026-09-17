@@ -1,5 +1,6 @@
 import { EXECUTOR_TEXT_LIMITS, executorOutputSchema, type ExecutorOutput } from "@/lib/agent/schemas";
 import { scanDraftForProductTruthViolations, type ProductTruthViolation } from "@/lib/agent/productTruth";
+import { isMechanicallyTruncated } from "@/lib/agent/mechanicalTruncation";
 import type { ContentBrief } from "@/lib/agent/schemas";
 
 export interface DraftValidationResult {
@@ -9,15 +10,6 @@ export interface DraftValidationResult {
   output?: ExecutorOutput;
 }
 
-// A string ending in one of these is presumed a deliberately finished
-// thought (a sentence, a quote, a trailing colon before a list rendered
-// elsewhere, a closing parenthesis). Intentionally short and permissive:
-// this is not a grammar checker, and legitimate copy ending in an emoji
-// or other character outside this set is never flagged by this alone —
-// only the exact-length match below (see findMechanicalTruncation) does
-// that work.
-const TERMINAL_CHARACTERS = new Set([".", "!", "?", "…", '"', "”", "'", "’", ")", ":"]);
-
 // Channel Content Rules v1 — deterministic format invariants (hard
 // structural rules, not editorial targets). A carousel's slide *count*
 // range and an image_post's single-panel requirement are format
@@ -26,11 +18,6 @@ const TERMINAL_CHARACTERS = new Set([".", "!", "?", "…", '"', "”", "'", "’
 const CAROUSEL_MIN_SLIDES = 3;
 const CAROUSEL_MAX_SLIDES = 6;
 const IMAGE_POST_SLIDE_COUNT = 1;
-
-function endsWithTerminalCharacter(text: string): boolean {
-  const trimmed = text.trimEnd();
-  return trimmed.length > 0 && TERMINAL_CHARACTERS.has(trimmed[trimmed.length - 1]);
-}
 
 /**
  * Secondary, deterministic defense against mechanical truncation
@@ -58,7 +45,7 @@ function findMechanicalTruncation(output: ExecutorOutput): string[] {
   const problems: string[] = [];
 
   const checkField = (label: string, text: string, limit: number) => {
-    if (text.length === limit && !endsWithTerminalCharacter(text)) {
+    if (isMechanicallyTruncated(text, limit)) {
       problems.push(`${label} appears mechanically truncated at its ${limit}-character limit`);
     }
   };
