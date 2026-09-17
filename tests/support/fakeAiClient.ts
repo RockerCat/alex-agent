@@ -249,6 +249,7 @@ export function createPlanOutput(overrides: Partial<PlannerOutput> = {}): Planne
         topic: "Cómo pasar de una cotización a una propuesta profesional",
         audience: "Instaladores solares en Colombia",
         cta: "Crea tu primera cotización",
+        ctaUrl: null,
         targetDate: "2026-09-12",
       },
     ],

@@ -184,6 +184,46 @@ const CTA_EMPHASIS_FONT_SIZES: Record<AssetRenderSpec["ctaEmphasis"], number[]> 
   normal: [32, 28, 24],
   strong: [40, 36, 32],
 };
+
+/** True when `ctaLabel` fits the single-line CTA pill at `emphasis` — the exact same measurement the renderer itself uses right before compositing (see the two `wrapToFit(input.ctaText, CTA_EMPHASIS_FONT_SIZES[...], ...)` call sites below). Exported so callers (lib/agent/assetGenerator.ts, lib/agent/assetRevision.ts) can check feasibility BEFORE attempting a render, without duplicating the fit math. */
+export function ctaFitsAtEmphasis(ctaLabel: string, emphasis: AssetRenderSpec["ctaEmphasis"]): boolean {
+  return wrapToFit(ctaLabel, CTA_EMPHASIS_FONT_SIZES[emphasis], CONTENT_WIDTH - 96, 1) !== null;
+}
+
+// Downgrade order only — never upgrades beyond what was requested.
+const CTA_EMPHASIS_DOWNGRADE_ORDER: AssetRenderSpec["ctaEmphasis"][] = ["strong", "normal", "subtle"];
+
+export interface CtaEmphasisFeasibility {
+  /** The emphasis actually usable: `requestedEmphasis` if it fits, otherwise the largest smaller level that does, otherwise the smallest level (see `fits`). */
+  emphasis: AssetRenderSpec["ctaEmphasis"];
+  /** False only when `ctaLabel` does not fit at ANY supported emphasis level, including the smallest ("subtle"). */
+  fits: boolean;
+}
+
+/**
+ * Deterministic pre-render feasibility check (real production incident,
+ * 2026-09-17): a Visual-Director-chosen `ctaEmphasis` can be too bold
+ * for an otherwise perfectly ordinary CTA label, and the renderer's own
+ * fail-safe (correctly) refuses to truncate it. Rather than fail deep
+ * inside rendering, callers check feasibility first and, if the
+ * requested emphasis doesn't fit, deterministically try the next
+ * smaller one — the same fit math the renderer itself uses, so a
+ * "downgrade" here is guaranteed to actually render. Never introduces
+ * an LLM call or any judgment beyond this fixed downgrade order.
+ */
+export function resolveFeasibleCtaEmphasis(
+  ctaLabel: string,
+  requestedEmphasis: AssetRenderSpec["ctaEmphasis"]
+): CtaEmphasisFeasibility {
+  const startIndex = CTA_EMPHASIS_DOWNGRADE_ORDER.indexOf(requestedEmphasis);
+  for (let i = startIndex; i < CTA_EMPHASIS_DOWNGRADE_ORDER.length; i++) {
+    const candidate = CTA_EMPHASIS_DOWNGRADE_ORDER[i];
+    if (ctaFitsAtEmphasis(ctaLabel, candidate)) {
+      return { emphasis: candidate, fits: true };
+    }
+  }
+  return { emphasis: CTA_EMPHASIS_DOWNGRADE_ORDER[CTA_EMPHASIS_DOWNGRADE_ORDER.length - 1], fits: false };
+}
 const CTA_EMPHASIS_PADDING_SCALE: Record<AssetRenderSpec["ctaEmphasis"], number> = {
   subtle: 0.85,
   normal: 1.0,

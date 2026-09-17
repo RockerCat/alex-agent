@@ -3,6 +3,7 @@ import { plannerOutputSchema, CONTENT_BRIEF_TEXT_LIMITS } from "@/lib/agent/sche
 import { MAX_CONTENT_PER_CYCLE, PLAN_PERIOD_DAYS } from "@/lib/agent/constants";
 import type { AgentContext } from "@/lib/agent/contextLoader";
 import { isMechanicallyTruncated } from "@/lib/agent/mechanicalTruncation";
+import { containsEmbeddedUrl, isValidCtaUrl } from "@/lib/agent/cta";
 
 export interface PlanValidationResult {
   valid: boolean;
@@ -128,6 +129,20 @@ export function validatePlannerOutput(
       const truncationProblems = findBriefMechanicalTruncation(brief);
       if (truncationProblems.length > 0) {
         contentErrors.push(`Dropped brief "${brief.topic}": ${truncationProblems.join("; ")}`);
+        return false;
+      }
+      // CTA label/destination contract (real production incident,
+      // 2026-09-17): cta must stay a short visible label — a URL never
+      // belongs there, whether or not ctaUrl is also provided (see
+      // lib/agent/cta.ts). ctaUrl, when provided, must be a genuinely
+      // valid http(s) URL rather than something malformed reaching
+      // publishing unnoticed.
+      if (containsEmbeddedUrl(brief.cta)) {
+        contentErrors.push(`Dropped brief "${brief.topic}": cta must be a short label and must not contain a URL — use ctaUrl for the destination`);
+        return false;
+      }
+      if (brief.ctaUrl !== null && !isValidCtaUrl(brief.ctaUrl)) {
+        contentErrors.push(`Dropped brief "${brief.topic}": ctaUrl is not a valid http(s) URL`);
         return false;
       }
       if (isDuplicateOfExisting(brief, context)) {

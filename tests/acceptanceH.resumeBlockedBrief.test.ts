@@ -29,6 +29,7 @@ describe("Resume a blocked brief after its human question is answered", () => {
           topic: "Cómo compartir tu propuesta con un cliente",
           audience: "Instaladores",
           cta: "Comparte tu propuesta",
+          ctaUrl: null,
           targetDate: "2026-09-12",
         },
         {
@@ -38,6 +39,7 @@ describe("Resume a blocked brief after its human question is answered", () => {
           topic: "Comienza gratis en SolarDesk",
           audience: "Instaladores",
           cta: "Comenzar gratis",
+          ctaUrl: null,
           targetDate: "2026-09-13",
         },
       ],
@@ -126,6 +128,7 @@ describe("Resume a blocked brief after its human question is answered", () => {
           topic: "Topic A",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-12",
         },
         {
@@ -135,6 +138,7 @@ describe("Resume a blocked brief after its human question is answered", () => {
           topic: "Topic B",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-13",
         },
       ],

@@ -145,6 +145,7 @@ describe("Marketing cycle lifecycle — expiry boundary", () => {
           topic: "Nuevo ciclo: resultados del piloto",
           audience: "Instaladores",
           cta: "Crea tu primera cotización",
+          ctaUrl: null,
           targetDate: "2026-09-18", // within the new period (starts 2026-09-17)
         },
       ],

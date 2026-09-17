@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, ContentAssetRow, ContentDraftRow } from "@/lib/types/database";
-import { renderImagePostAsset, AssetRenderError } from "@/lib/agent/assetRenderer";
+import { renderImagePostAsset, AssetRenderError, resolveFeasibleCtaEmphasis } from "@/lib/agent/assetRenderer";
+import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
 import { AssetStorageError, type AssetStorage } from "@/lib/agent/assetStorage";
 import {
   assetRenderSpecSchema,
@@ -264,16 +265,46 @@ async function renderAndPersist(params: {
   degradeReason?: string;
   origin: "visual_director" | "fallback" | "reused_plan";
 }): Promise<GenerateAssetOutcome> {
-  const { db, storage, draft, nextVersion, plan, strategy, screenshotMeta, proposalMeta, generatedImage, generatedImageInfo, degraded, degradeReason, origin } =
+  const { db, storage, draft, nextVersion, strategy, screenshotMeta, proposalMeta, generatedImage, generatedImageInfo, degraded, degradeReason, origin } =
     params;
 
-  const planProvenance = buildVisualPlanProvenance({ plan, strategy, origin, degraded, degradeReason, generatedImageInfo, draft });
+  const { label: ctaLabel } = resolveCtaLabelAndUrl(draft);
+
+  // Pre-render CTA feasibility (real production incident, 2026-09-17):
+  // check whether the plan's chosen ctaEmphasis actually fits BEFORE
+  // attempting the render, and deterministically use the largest
+  // smaller emphasis that does. The renderer's own wrapToFit check
+  // remains as final defense; this just keeps a normal-length CTA from
+  // failing solely because of an avoidably-bold emphasis choice.
+  const feasibility = resolveFeasibleCtaEmphasis(ctaLabel, params.plan.renderSpec.ctaEmphasis);
+  const plan: VisualCreativePlan =
+    feasibility.emphasis === params.plan.renderSpec.ctaEmphasis
+      ? params.plan
+      : { ...params.plan, renderSpec: { ...params.plan.renderSpec, ctaEmphasis: feasibility.emphasis } };
+
+  // Always include the effective renderSpec at the TOP level of
+  // provenance (not just nested in visualPlan) — this is the exact
+  // shape lib/agent/assetGenerator.ts's getEffectiveRenderSpec expects,
+  // and the exact shape lib/agent/assetRevision.ts's insertFailedRevision
+  // already uses for its own failure rows. Without this, a render
+  // failure here silently lost the actually-attempted renderSpec, so a
+  // subsequent Regenerate would fall back to DEFAULT_RENDER_SPEC instead
+  // of reproducing what was really tried.
+  const planProvenance = {
+    renderSpec: plan.renderSpec,
+    ...buildVisualPlanProvenance({ plan, strategy, origin, degraded, degradeReason, generatedImageInfo, draft }),
+  };
+
+  if (!feasibility.fits) {
+    const message = `The approved CTA label "${ctaLabel}" does not fit within any supported CTA emphasis level and cannot be rendered safely. Shorten the CTA label.`;
+    return insertFailedAssetRow(db, draft, nextVersion, message, planProvenance);
+  }
 
   let rendered;
   try {
     rendered = await renderImagePostAsset({
       headline: draft.hook!,
-      ctaText: draft.cta_text!,
+      ctaText: ctaLabel,
       assetVersion: nextVersion,
       visualDirection: draft.visual_direction ?? "",
       purpose: draft.purpose,
@@ -484,7 +515,7 @@ async function performFirstGeneration(params: {
     purpose: draft.purpose,
     audience: draft.audience,
     hook: draft.hook!,
-    ctaText: draft.cta_text!,
+    ctaText: resolveCtaLabelAndUrl(draft).label,
     visualDirection: draft.visual_direction ?? "",
     availableVerifiedSources: AVAILABLE_VERIFIED_SOURCES_SUMMARY,
     generativeCapabilityAvailable,

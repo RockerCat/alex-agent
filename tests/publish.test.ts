@@ -252,3 +252,107 @@ describe("publishAssetToFacebook", () => {
     expect(facebookClient.calls).toHaveLength(0);
   });
 });
+
+// CTA destination reaches the published post (real production gap,
+// 2026-09-17): publishAssetToFacebook never sends cta/cta_text or a
+// separate link field to Meta (see lib/agent/facebookClient.ts) — the
+// caption is the only text Facebook ever receives. When an approved
+// draft has a valid destination, it must reach the published message
+// text deterministically, without duplicating it or inventing copy.
+describe("publishAssetToFacebook — CTA destination reaches the published caption", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN = REAL_TOKEN;
+    process.env.META_FACEBOOK_PAGE_ID = "1225292840656707";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("appends the destination exactly once when the caption doesn't already contain it (new-style row, cta_url set)", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", {
+      caption: "Una propuesta profesional, lista para compartir con tu cliente.",
+      cta_text: "Comenzar gratis",
+      cta_url: "https://solardesk.co/register",
+    });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-post-1" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    const message = facebookClient.calls[0].message;
+    expect(message).toContain("https://solardesk.co/register");
+    expect(message.split("https://solardesk.co/register")).toHaveLength(2); // appears exactly once
+    expect(message).toContain(draft.caption); // human-written caption preserved verbatim
+  });
+
+  it("resolves the destination from a legacy combined cta_text (cta_url null) exactly like a new-style row", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", {
+      caption: "Una propuesta profesional, lista para compartir con tu cliente.",
+      cta_text: "Comenzar gratis — https://solardesk.co/register",
+      cta_url: null,
+    });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-post-2" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    expect(facebookClient.calls[0].message).toContain("https://solardesk.co/register");
+  });
+
+  it("does not duplicate the destination when the human-written caption already contains it", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", {
+      caption: "Regístrate gratis aquí: https://solardesk.co/register — sin tarjeta de crédito.",
+      cta_text: "Comenzar gratis",
+      cta_url: "https://solardesk.co/register",
+    });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-post-3" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    const message = facebookClient.calls[0].message;
+    expect(message).toBe(draft.caption); // unchanged — already present
+    expect(message.split("https://solardesk.co/register")).toHaveLength(2); // still exactly once
+  });
+
+  it("leaves the caption exactly as-is when the draft has no destination at all", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", {
+      caption: "Contenido educativo sin llamado a un destino específico.",
+      cta_text: "Aprende más",
+      cta_url: null,
+    });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-post-4" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    expect(facebookClient.calls[0].message).toBe(draft.caption);
+  });
+
+  it("never sends cta_text itself as a substitute for the caption", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", {
+      caption: "Caption humano aprobado.",
+      cta_text: "Comenzar gratis",
+      cta_url: "https://solardesk.co/register",
+    });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-post-5" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    expect(facebookClient.calls[0].message).not.toContain("Comenzar gratis");
+  });
+});

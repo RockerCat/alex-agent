@@ -26,6 +26,7 @@ const brief: ContentBrief = {
   topic: "Topic",
   audience: "aud",
   cta: "cta",
+  ctaUrl: null,
   targetDate: "2026-09-12",
 };
 
@@ -60,6 +61,11 @@ describe("Executor system prompt — Channel Content Rules v1", () => {
     expect(system).toMatch(/coordinates/i);
     expect(system).toMatch(/pixel measurements/i);
     expect(system).toMatch(/Visual Director/);
+  });
+
+  it("distinguishes the cta label from ctaUrl and forbids embedding a URL in the generated cta", () => {
+    expect(system).toMatch(/`ctaUrl`.*is a separate, fixed destination/i);
+    expect(system).toMatch(/must never append, restate, or otherwise embed `ctaUrl`/i);
   });
 });
 
@@ -96,9 +102,10 @@ describe("Executor revision prompt — narrow-feedback preservation and brief bo
     expect(user).toMatch(/the new version must actually reflect the requested change, not merely restate the previous version/i);
   });
 
-  it("identifies the ContentBrief as fixed context, not revision-editable output", () => {
+  it("identifies the ContentBrief (including ctaUrl) as fixed context, not revision-editable output", () => {
     expect(user).toMatch(/fixed context, not revision-editable output/i);
     expect(user).toMatch(/your output schema has no field for it/i);
+    expect(user).toMatch(/purpose, channel, format, topic, audience, cta, ctaUrl, targetDate/);
   });
 
   it("supplies all editable/versioned Executor-output fields as previous content, not just title/hook/caption/cta", () => {

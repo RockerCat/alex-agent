@@ -3,6 +3,7 @@ import type { Database, AssetPublicationRow } from "@/lib/types/database";
 import type { AssetStorage } from "@/lib/agent/assetStorage";
 import { FacebookPublishError, facebookPublishingCapabilityAvailable, type FacebookPageClient } from "@/lib/agent/facebookClient";
 import { isUniqueViolation } from "@/lib/agent/runLock";
+import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
 
 // AlexAgent v0.2 — Facebook manual publishing (checkpoint 1).
 //
@@ -174,10 +175,22 @@ export async function publishAssetToFacebook(params: {
   if (!asset.storage_path) {
     return { status: "ineligible", message: "Asset has no stored image file to publish." };
   }
-  const caption = (draft.caption ?? draft.hook ?? "").trim();
-  if (!caption) {
+  const baseCaption = (draft.caption ?? draft.hook ?? "").trim();
+  if (!baseCaption) {
     return { status: "ineligible", message: "Draft has no approved caption or hook to publish." };
   }
+
+  // Ensure the CTA destination reaches the actual published text (real
+  // production gap, 2026-09-17): this endpoint never sends cta/cta_text
+  // or a separate link field to Meta (see facebookClient.ts) — the
+  // caption is the only text Facebook ever receives. If the approved
+  // draft has a valid destination and the human-written caption doesn't
+  // already include it verbatim, append it deterministically. Never
+  // invents copy, never sends cta_text as a caption substitute, and
+  // never duplicates the URL if it's already present.
+  const { url: ctaDestination } = resolveCtaLabelAndUrl(draft);
+  const caption =
+    ctaDestination && !baseCaption.includes(ctaDestination) ? `${baseCaption}\n\n${ctaDestination}` : baseCaption;
 
   const claim = await claimPublicationSlot(db, { assetId: asset.id, draftId: draft.id, brand: draft.brand });
   if (!claim.ok) {

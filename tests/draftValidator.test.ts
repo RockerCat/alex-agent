@@ -16,6 +16,7 @@ const carouselBrief: ContentBrief = {
   topic: "Topic",
   audience: "aud",
   cta: "cta",
+  ctaUrl: null,
   targetDate: "2026-09-12",
 };
 
@@ -75,5 +76,26 @@ describe("draftValidator — unaffected content types keep their existing (uncon
     // exactly as before this change.
     expect(validateDraft(carouselExecutorOutput({ slides: slidesOf(1) }), storyBrief).valid).toBe(true);
     expect(validateDraft(carouselExecutorOutput({ slides: slidesOf(7) }), captionOnlyBrief).valid).toBe(true);
+  });
+});
+
+// CTA label/destination contract (real production incident, 2026-09-17):
+// the Executor's own `cta` output is rendered directly into the image
+// as a single line of text, so it must never carry a URL either —
+// mirroring the same structural check already applied to the Planner's
+// brief-level `cta` (see tests/planValidator.test.ts).
+describe("draftValidator — Executor cta must not contain a URL", () => {
+  it("a short cta label is valid", () => {
+    const result = validateDraft(carouselExecutorOutput({ cta: "Comenzar gratis" }), carouselBrief);
+    expect(result.valid).toBe(true);
+  });
+
+  it("a cta with an embedded URL (the real incident shape) is rejected deterministically", () => {
+    const result = validateDraft(
+      carouselExecutorOutput({ cta: "Comenzar gratis — https://solardesk.co/register" }),
+      carouselBrief
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("cta must be a short label and must not contain a URL"))).toBe(true);
   });
 });

@@ -19,6 +19,7 @@ export function buildPlannerPrompt(context: AgentContext, todayIso: string): { s
     `Never propose more than ${MAX_CONTENT_PER_CYCLE} content pieces. Zero pieces is a valid and often correct answer.`,
     "If a business priority or material product fact required for a safe decision is unknown, use decision NEEDS_HUMAN_INPUT and populate humanQuestion instead of guessing.",
     "Never invent customers, testimonials, statistics, awards, partnerships, or claim unavailable capabilities as available.",
+    "Each content brief's `cta` must be a short, visible call-to-action label only (e.g. \"Comenzar gratis\") — never a URL, and never a label with a URL appended to it. If this piece should drive to a specific destination confirmed in BRAND.md, provide it separately as `ctaUrl` (a full https:// URL); leave `ctaUrl` null when there is no specific verified destination.",
     "Do not repeat a topic that is already covered by an existing active-plan draft unless materially different.",
     "CONTINUE_EXISTING_PLAN and NO_ACTION are not interchangeable. An active plan existing is not, by itself, a reason to choose CONTINUE_EXISTING_PLAN.",
     "Choose CONTINUE_EXISTING_PLAN only when the active plan has justified, differentiated work to execute right now — in that case `content` must include at least one concrete, non-duplicate brief. An empty CONTINUE_EXISTING_PLAN is invalid and will be rejected.",

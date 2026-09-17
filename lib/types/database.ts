@@ -104,6 +104,8 @@ export type ContentDraftRow = {
   topic: string;
   audience: string;
   cta: string;
+  /** Separate, optional destination URL (see lib/agent/cta.ts). Null for content with no specific destination, and for legacy rows persisted before this field existed — see lib/agent/cta.ts's legacy-compatible resolver. */
+  cta_url: string | null;
   target_date: string;
   status: DraftStatus;
   version: number;

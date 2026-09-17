@@ -2,8 +2,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, ContentAssetRow, ContentDraftRow } from "@/lib/types/database";
 import type { AiClient } from "@/lib/agent/aiClient";
 import { AssetStorageError, type AssetStorage } from "@/lib/agent/assetStorage";
-import { renderImagePostAsset, AssetRenderError } from "@/lib/agent/assetRenderer";
+import { renderImagePostAsset, AssetRenderError, resolveFeasibleCtaEmphasis } from "@/lib/agent/assetRenderer";
 import { getLatestAsset, resolveCachedVisualSources, buildVisualPlanProvenance, type CachedVisualSourceResolution } from "@/lib/agent/assetGenerator";
+import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
 import { BudgetGuard } from "@/lib/agent/budgetGuard";
 import {
   callAssetFeedbackInterpreter,
@@ -185,7 +186,7 @@ async function performRevision(params: {
     return insertFailedRevision(db, draft, nextVersion, message, feedback, latest.asset_version);
   }
 
-  const { renderSpec: validatedSpec, appliedChanges, unsupportedRequests }: AssetFeedbackInterpretation = interpreterResult.output;
+  const { renderSpec: requestedSpec, appliedChanges, unsupportedRequests }: AssetFeedbackInterpretation = interpreterResult.output;
   const interpretation: AssetFeedbackInterpretationSummary = { appliedChanges, unsupportedRequests };
 
   // None of the requested changes could be represented by the current
@@ -198,6 +199,21 @@ async function performRevision(params: {
     return { status: "no_applicable_changes", message: "No requested visual change could be applied with the current renderer.", interpretation };
   }
 
+  const { label: ctaLabel } = resolveCtaLabelAndUrl(draft);
+
+  // Same deterministic pre-render CTA feasibility check as plain
+  // Generate/Regenerate (lib/agent/assetGenerator.ts): the interpreter
+  // can only ever request emphasis via the same bounded enum, so it can
+  // just as easily pick one an ordinary CTA label doesn't fit at.
+  const feasibility = resolveFeasibleCtaEmphasis(ctaLabel, requestedSpec.ctaEmphasis);
+  const validatedSpec: AssetRenderSpec =
+    feasibility.emphasis === requestedSpec.ctaEmphasis ? requestedSpec : { ...requestedSpec, ctaEmphasis: feasibility.emphasis };
+
+  if (!feasibility.fits) {
+    const message = `The approved CTA label "${ctaLabel}" does not fit within any supported CTA emphasis level and cannot be rendered safely. Shorten the CTA label.`;
+    return insertFailedRevision(db, draft, nextVersion, message, feedback, latest.asset_version, validatedSpec);
+  }
+
   // Render using the asset's actual effective strategy/sources (the
   // resolution computed above), never re-deriving a source guess from
   // the draft's raw keywords — the interpreter only ever adjusts
@@ -206,7 +222,7 @@ async function performRevision(params: {
   try {
     rendered = await renderImagePostAsset({
       headline: draft.hook!,
-      ctaText: draft.cta_text!,
+      ctaText: ctaLabel,
       assetVersion: nextVersion,
       visualDirection: draft.visual_direction ?? "",
       purpose: draft.purpose,

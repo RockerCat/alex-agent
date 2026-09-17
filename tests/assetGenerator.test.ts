@@ -6,6 +6,8 @@ import { FakeAssetStorage } from "@/tests/support/fakeAssetStorage";
 import { ScriptedAiClient, visualPlan } from "@/tests/support/fakeAiClient";
 import { ScriptedImageGenerationClient, tinyPngBuffer } from "@/tests/support/fakeImageGenerationClient";
 import { seedDefaultSettings } from "@/tests/support/seed";
+import { getEffectiveRenderSpec } from "@/lib/agent/assetGenerator";
+import { DEFAULT_RENDER_SPEC } from "@/lib/agent/schemas";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, ContentDraftRow } from "@/lib/types/database";
 
@@ -761,5 +763,125 @@ describe("generateAsset — Visual Director (first-time generation with an aiCli
     const regenerated = await generateAsset({ db, storage, draftId: "draft-1" });
     expect(regenerated.status).toBe("success");
     expect(regenerated.asset?.asset_version).toBe(2);
+  });
+});
+
+// CTA label/destination contract + pre-render feasibility + provenance
+// fix (real production incident, 2026-09-17): a Facebook image_post
+// draft's approved cta_text was the combined "label — URL" string; the
+// Visual Director chose ctaEmphasis "strong"; the 47-character combined
+// string didn't fit, and the resulting generation_failed row's
+// render_provenance never recorded a top-level renderSpec, so Regenerate
+// would have silently fallen back to DEFAULT_RENDER_SPEC instead of
+// reproducing what was actually attempted.
+describe("CTA label/destination contract and pre-render feasibility", () => {
+  // Same 47-character shape as the real incident's combined CTA string —
+  // built the same way tests/assetRenderer.test.ts's headline-overflow
+  // fixtures are (repeated real words, not one unbreakable token), so
+  // wrapToFit's word-boundary wrapping behaves realistically.
+  const REAL_INCIDENT_LENGTH_LABEL = "Palabra ".repeat(6).trim(); // 47 chars — fits at "normal", not at "strong"
+  const NEVER_FITS_LABEL = "Palabra ".repeat(11).trim(); // 87 chars — doesn't fit even at "subtle"
+
+  it("1. the renderer receives only the resolved label, never the legacy combined cta_text string", async () => {
+    const { fake, db, storage } = setupWithBudget();
+    // Legacy shape: cta_url is null/unset, and cta_text still carries
+    // the combined "label — URL" string that would NOT fit at "strong"
+    // (see tests/assetRenderer.test.ts's realistic-length CTA-overflow
+    // case) — but the derived label "Comenzar gratis" fits trivially.
+    seedDraft(fake, "draft-1", { cta_text: "Comenzar gratis — https://solardesk.co/register" });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [],
+      [visualPlan({ renderSpec: { ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" } })]
+    );
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-1", aiClient });
+
+    expect(outcome.status).toBe("success");
+    const provenance = outcome.asset!.render_provenance as { cta?: { source?: string } };
+    expect(provenance.cta?.source).toBe("draft.cta_text");
+  });
+
+  it("2. a realistic CTA that doesn't fit at the requested emphasis is deterministically downgraded, never truncated", async () => {
+    const { fake, db, storage } = setupWithBudget();
+    seedDraft(fake, "draft-1", { cta_text: REAL_INCIDENT_LENGTH_LABEL });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [],
+      [visualPlan({ renderSpec: { ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" } })]
+    );
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-1", aiClient });
+
+    expect(outcome.status).toBe("success");
+    const renderSpec = (outcome.asset!.render_provenance as { renderSpec?: { ctaEmphasis?: string } }).renderSpec;
+    expect(renderSpec?.ctaEmphasis).toBe("normal"); // downgraded from the requested "strong"
+  });
+
+  it("3. a CTA that fits nowhere still fails fail-safe, with a clear pre-render message, before any pixels are produced", async () => {
+    const { fake, db, storage } = setupWithBudget();
+    seedDraft(fake, "draft-1", { cta_text: NEVER_FITS_LABEL });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [],
+      [visualPlan({ renderSpec: { ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" } })]
+    );
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-1", aiClient });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.asset?.status).toBe("generation_failed");
+    expect(outcome.asset?.error_message).toMatch(/does not fit within any supported CTA emphasis level/);
+    expect(storage.files.size).toBe(0); // no render/upload was ever attempted
+  });
+
+  it("4. a failed generation's provenance preserves the effective renderSpec at the top level (not just nested in visualPlan)", async () => {
+    const { fake, db, storage } = setupWithBudget();
+    seedDraft(fake, "draft-1", { cta_text: NEVER_FITS_LABEL });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [],
+      [visualPlan({ renderSpec: { ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" } })]
+    );
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-1", aiClient });
+
+    expect(outcome.status).toBe("failed");
+    // getEffectiveRenderSpec is exactly what Regenerate relies on — this
+    // is the fixed shape, verified through the real reader function.
+    const effective = getEffectiveRenderSpec(outcome.asset!);
+    expect(effective.ctaEmphasis).toBe("subtle"); // the smallest level actually tried
+  });
+
+  it("5. Regenerate on an unchanged draft after a failure reproduces the SAME effective emphasis — never silently reverting to DEFAULT_RENDER_SPEC", async () => {
+    const { fake, db, storage } = setupWithBudget();
+    seedDraft(fake, "draft-1", { cta_text: NEVER_FITS_LABEL });
+    const aiClient = new ScriptedAiClient(
+      [],
+      [],
+      [],
+      [visualPlan({ renderSpec: { ...DEFAULT_RENDER_SPEC, ctaEmphasis: "strong" } })]
+    );
+
+    const first = await generateAsset({ db, storage, draftId: "draft-1", aiClient });
+    expect(first.status).toBe("failed");
+    expect(getEffectiveRenderSpec(first.asset!).ctaEmphasis).toBe("subtle");
+
+    // Regenerate: no aiClient passed at all — this must go through
+    // regenerateFromPrevious (reusing the previous failed asset's
+    // provenance), never the Visual Director again.
+    const second = await generateAsset({ db, storage, draftId: "draft-1" });
+
+    expect(second.status).toBe("failed");
+    expect(second.asset?.asset_version).toBe(2);
+    // Before the provenance fix, this would have silently come back as
+    // "normal" (DEFAULT_RENDER_SPEC), hiding what was really attempted.
+    const secondRenderSpec = (second.asset!.render_provenance as { renderSpec?: { ctaEmphasis?: string } }).renderSpec;
+    expect(secondRenderSpec?.ctaEmphasis).toBe("subtle");
+    expect(secondRenderSpec?.ctaEmphasis).not.toBe(DEFAULT_RENDER_SPEC.ctaEmphasis);
   });
 });

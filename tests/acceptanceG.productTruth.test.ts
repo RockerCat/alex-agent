@@ -32,6 +32,7 @@ describe("Acceptance G — Product Truth", () => {
       topic: "topic",
       audience: "aud",
       cta: "cta",
+      ctaUrl: null,
       targetDate: "2026-09-12",
     };
     const bad = carouselExecutorOutput({

@@ -157,6 +157,7 @@ describe("CONTINUE_EXISTING_PLAN vs NO_ACTION", () => {
           topic: "Cómo revisar tus supuestos antes de compartir la propuesta",
           audience: "Instaladores",
           cta: "Comparte tu propuesta",
+          ctaUrl: null,
           targetDate: "2026-09-12",
         },
       ],

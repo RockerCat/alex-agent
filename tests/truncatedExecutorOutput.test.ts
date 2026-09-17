@@ -33,6 +33,7 @@ const brief: ContentBrief = {
   topic: "Topic",
   audience: "aud",
   cta: "cta",
+  ctaUrl: null,
   targetDate: "2026-09-12",
 };
 

@@ -30,6 +30,21 @@ export const CONTENT_BRIEF_TEXT_LIMITS = {
   cta: 260,
 } as const;
 
+// Real production incident (2026-09-17): `cta` used to carry a short
+// label AND an appended destination URL in one string (e.g. "Comenzar
+// gratis — https://solardesk.co/register"), which is what the asset
+// renderer's single-line CTA pill measures — routinely too long once a
+// bolder emphasis is chosen. `cta` is now a label only; `ctaUrl` is the
+// separate, optional destination (see lib/agent/cta.ts, the single
+// place that resolves {label, url} for both this new shape and legacy
+// rows persisted before this field existed). Not every piece needs a
+// destination — general brand-awareness content can leave this null.
+// Format/validity is enforced deterministically in
+// lib/agent/planValidator.ts (lib/agent/cta.ts's isValidCtaUrl), not
+// here, matching how other business-rule checks in this schema file are
+// layered on top of shape-only zod validation.
+export const CTA_URL_MAX_LENGTH = 2048;
+
 export const contentBriefSchema = z.object({
   purpose: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.purpose),
   channel: z.enum(ALLOWED_CHANNELS),
@@ -37,6 +52,7 @@ export const contentBriefSchema = z.object({
   topic: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.topic),
   audience: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.audience),
   cta: z.string().min(1).max(CONTENT_BRIEF_TEXT_LIMITS.cta),
+  ctaUrl: z.string().min(1).max(CTA_URL_MAX_LENGTH).nullable(),
   targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD"),
 });
 export type ContentBrief = z.infer<typeof contentBriefSchema>;

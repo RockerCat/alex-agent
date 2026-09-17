@@ -43,6 +43,7 @@ export function buildExecutorPrompt(
     "These character/hashtag targets are editorial guidance, not quotas — never pad copy, slides, or hashtags merely to reach a preferred range/count; shorter is always acceptable when it communicates the message well.",
     "Every draft needs exactly one clear primary CTA. Do not unnecessarily repeat the same CTA/URL throughout the caption and every slide.",
     "Respect the brief's content type structurally: a carousel's `slides` array must contain between 3 and 6 items; an image_post has exactly one visual panel, so its `slides` array must contain exactly 1 item.",
+    "The content brief's `cta` is a suggested short label; `ctaUrl` (when not null) is a separate, fixed destination — it is context, not something you restate. Your own `cta` output must likewise be a short visible label only and must never append, restate, or otherwise embed `ctaUrl` (or any other URL) inside it — the renderer displays `cta` directly in the image as a single line of text.",
     "visualDirection must describe communicative visual intent only — hierarchy, subject/emphasis, and what the eventual asset needs to communicate (for example: \"Show the transition from a technical solar quotation to a professional proposal ready to share, emphasizing the finished result and keeping information density low\"). Never specify hex codes, exact colors, font families or sizes, coordinates, pixel measurements, or other low-level rendering/layout instructions — those belong to the Visual Director and the brand's fixed render constraints, not to you.",
   ].join("\n");
 
@@ -64,7 +65,7 @@ export function buildExecutorPrompt(
       JSON.stringify(revision.previousContent, null, 2),
       "Address the feedback above directly — the new version must actually reflect the requested change, not merely restate the previous version.",
       "When the feedback is narrow, keep the previous version's fields that are unrelated to the requested change unchanged if they remain valid and still consistent with the content brief and channel/Product Truth rules — never rewrite an unaffected field merely for stylistic variety.",
-      "The Content brief above (purpose, channel, format, topic, audience, cta, targetDate) is fixed context, not revision-editable output — your output schema has no field for it, so never attempt to restate or correct it."
+      "The Content brief above (purpose, channel, format, topic, audience, cta, ctaUrl, targetDate) is fixed context, not revision-editable output — your output schema has no field for it, so never attempt to restate or correct it."
     );
   }
 

@@ -1,0 +1,12 @@
+-- Adds a separate, optional CTA destination URL to content_drafts,
+-- decoupling it from the visible CTA label (content_drafts.cta /
+-- cta_text). Real production incident (2026-09-17): a combined
+-- "label — URL" string in cta_text overflowed the asset renderer's
+-- single-line CTA pill once a bolder emphasis was chosen.
+--
+-- Additive and nullable only — existing rows keep cta_url = null and
+-- remain fully functional: lib/agent/cta.ts's resolver derives
+-- {label, url} from the existing combined string when cta_url is null,
+-- entirely at read time. No backfill; no existing row is ever mutated
+-- by this migration or by the application code that reads it.
+alter table content_drafts add column cta_url text;

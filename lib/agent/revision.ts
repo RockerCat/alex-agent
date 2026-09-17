@@ -19,6 +19,7 @@ function draftToBrief(draft: ContentDraftRow): ContentBrief {
     topic: draft.topic,
     audience: draft.audience,
     cta: draft.cta,
+    ctaUrl: draft.cta_url,
     targetDate: draft.target_date,
   };
 }

@@ -545,6 +545,7 @@ async function executeContentBrief(params: {
           topic: brief.topic,
           audience: brief.audience,
           cta: brief.cta,
+          cta_url: brief.ctaUrl,
           target_date: brief.targetDate,
           status: "draft",
           version: 0, // regenerateDraftContent bumps to 1 on the first successful resume, matching normal "v1 = initial content" numbering.
@@ -606,6 +607,7 @@ async function executeContentBrief(params: {
           topic: brief.topic,
           audience: brief.audience,
           cta: brief.cta,
+          cta_url: brief.ctaUrl,
           target_date: brief.targetDate,
           status: "pending_approval",
           version: 1,

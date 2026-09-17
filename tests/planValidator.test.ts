@@ -27,6 +27,7 @@ describe("planValidator", () => {
       topic: `topic-${i}`,
       audience: "aud",
       cta: "cta",
+      ctaUrl: null,
       targetDate: "2026-09-10",
     }));
     const output = createPlanOutput({ content });
@@ -46,6 +47,7 @@ describe("planValidator", () => {
           topic: "out of range",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-10-01",
         },
       ],
@@ -87,6 +89,7 @@ describe("planValidator", () => {
           topic: "Cómo crear tu primera cotización",
           audience: "aud",
           cta: "cta",
+          cta_url: null,
           target_date: "2026-09-10",
           status: "pending_approval",
           version: 1,
@@ -116,6 +119,7 @@ describe("planValidator", () => {
           topic: "Cómo crear tu primera cotización",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-11",
         },
       ],
@@ -141,6 +145,7 @@ describe("planValidator", () => {
           topic: "Cómo crear tu primera cotización",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-10",
         },
         {
@@ -150,6 +155,7 @@ describe("planValidator", () => {
           topic: "  cómo crear tu primera cotización  ",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-11",
         },
       ],
@@ -216,6 +222,7 @@ describe("planValidator", () => {
           topic: "Cómo explicar tus supuestos de estimación",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-11",
         },
       ],
@@ -289,6 +296,7 @@ describe("planValidator", () => {
           topic: "Nueva pieza",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-16",
         },
       ],
@@ -309,6 +317,7 @@ describe("planValidator", () => {
           topic: "Nueva pieza",
           audience: "aud",
           cta: "cta",
+          ctaUrl: null,
           targetDate: "2026-09-16",
         },
       ],
@@ -336,6 +345,7 @@ function baseBrief(overrides: Partial<ContentBrief> = {}): ContentBrief {
     topic: "Cómo crear tu primera cotización",
     audience: "Instaladores solares en Colombia",
     cta: "Crea tu primera cotización",
+    ctaUrl: null,
     targetDate: "2026-09-10",
     ...overrides,
   };
@@ -393,5 +403,48 @@ describe("planValidator — ContentBrief mechanical-truncation defense", () => {
     expect(result.valid).toBe(true);
     expect(result.corrected!.content.length).toBeGreaterThan(0);
     expect(result.errors.some((e) => e.includes("truncated"))).toBe(false);
+  });
+});
+
+// CTA label/destination contract (real production incident, 2026-09-17):
+// a ContentBrief with a separate, valid ctaUrl must be accepted; a cta
+// label carrying an embedded URL (the exact incident shape) or an
+// invalid ctaUrl must be deterministically dropped before it can ever
+// become a persisted draft.
+describe("planValidator — CTA label/destination contract", () => {
+  it("1. accepts a brief with cta label and a separate, valid ctaUrl", () => {
+    const output = createPlanOutput({
+      content: [baseBrief({ cta: "Comenzar gratis", ctaUrl: "https://solardesk.co/register" })],
+    });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(1);
+    expect(result.corrected!.content[0].cta).toBe("Comenzar gratis");
+    expect(result.corrected!.content[0].ctaUrl).toBe("https://solardesk.co/register");
+  });
+
+  it("accepts a brief with no destination (ctaUrl null) — not every piece needs one", () => {
+    const output = createPlanOutput({ content: [baseBrief({ cta: "Comenzar gratis", ctaUrl: null })] });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(1);
+  });
+
+  it("drops the real incident shape: cta label with a URL appended instead of using ctaUrl", () => {
+    const output = createPlanOutput({
+      content: [baseBrief({ cta: "Comenzar gratis — https://solardesk.co/register", ctaUrl: null })],
+    });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true); // dropped, not a whole-response rejection
+    expect(result.corrected!.content).toHaveLength(0);
+    expect(result.errors.some((e) => e.includes("cta must be a short label and must not contain a URL"))).toBe(true);
+  });
+
+  it("drops a brief whose ctaUrl is not a valid http(s) URL", () => {
+    const output = createPlanOutput({ content: [baseBrief({ cta: "Comenzar gratis", ctaUrl: "not-a-url" })] });
+    const result = validatePlannerOutput(output, baseContext(), "2026-09-08");
+    expect(result.valid).toBe(true);
+    expect(result.corrected!.content).toHaveLength(0);
+    expect(result.errors.some((e) => e.includes("ctaUrl is not a valid http(s) URL"))).toBe(true);
   });
 });

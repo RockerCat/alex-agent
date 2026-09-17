@@ -1,6 +1,7 @@
 import { EXECUTOR_TEXT_LIMITS, executorOutputSchema, type ExecutorOutput } from "@/lib/agent/schemas";
 import { scanDraftForProductTruthViolations, type ProductTruthViolation } from "@/lib/agent/productTruth";
 import { isMechanicallyTruncated } from "@/lib/agent/mechanicalTruncation";
+import { containsEmbeddedUrl } from "@/lib/agent/cta";
 import type { ContentBrief } from "@/lib/agent/schemas";
 
 export interface DraftValidationResult {
@@ -86,6 +87,14 @@ export function validateDraft(raw: unknown, brief: ContentBrief): DraftValidatio
 
   if (brief.format === "image_post" && output.slides.length !== IMAGE_POST_SLIDE_COUNT) {
     errors.push(`image_post format requires exactly ${IMAGE_POST_SLIDE_COUNT} slide`);
+  }
+
+  // CTA label/destination contract (real production incident,
+  // 2026-09-17): cta is rendered directly into the image as a single
+  // line of text — a URL never belongs there, whether or not the brief
+  // supplied a separate ctaUrl (see lib/agent/cta.ts).
+  if (containsEmbeddedUrl(output.cta)) {
+    errors.push("cta must be a short label and must not contain a URL — the renderer displays cta directly in the image");
   }
 
   if (output.unresolvedFactualGap) {
