@@ -18,6 +18,15 @@ export interface DraftValidationResult {
 // that work.
 const TERMINAL_CHARACTERS = new Set([".", "!", "?", "…", '"', "”", "'", "’", ")", ":"]);
 
+// Channel Content Rules v1 — deterministic format invariants (hard
+// structural rules, not editorial targets). A carousel's slide *count*
+// range and an image_post's single-panel requirement are format
+// semantics, not prose quality, so they belong here rather than in the
+// Executor's prompt guidance alone.
+const CAROUSEL_MIN_SLIDES = 3;
+const CAROUSEL_MAX_SLIDES = 6;
+const IMAGE_POST_SLIDE_COUNT = 1;
+
 function endsWithTerminalCharacter(text: string): boolean {
   const trimmed = text.trimEnd();
   return trimmed.length > 0 && TERMINAL_CHARACTERS.has(trimmed[trimmed.length - 1]);
@@ -84,8 +93,12 @@ export function validateDraft(raw: unknown, brief: ContentBrief): DraftValidatio
   const output = parsed.data;
   const errors: string[] = [];
 
-  if (brief.format === "carousel" && output.slides.length < 3) {
-    errors.push("carousel format requires at least 3 slides");
+  if (brief.format === "carousel" && (output.slides.length < CAROUSEL_MIN_SLIDES || output.slides.length > CAROUSEL_MAX_SLIDES)) {
+    errors.push(`carousel format requires between ${CAROUSEL_MIN_SLIDES} and ${CAROUSEL_MAX_SLIDES} slides`);
+  }
+
+  if (brief.format === "image_post" && output.slides.length !== IMAGE_POST_SLIDE_COUNT) {
+    errors.push(`image_post format requires exactly ${IMAGE_POST_SLIDE_COUNT} slide`);
   }
 
   if (output.unresolvedFactualGap) {
