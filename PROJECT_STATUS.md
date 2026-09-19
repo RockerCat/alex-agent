@@ -10,7 +10,7 @@ Running record of what is actually implemented and validated, kept current as ch
 
 **Known limitation:** Instagram carousel publishing is not implemented.
 
-**Next product initiative: Autonomy v1 — NOT YET DESIGNED OR STARTED.** Intended high-level outcome only (see `CLAUDE.md` for the approved product north star; no technical architecture below is decided):
+**Next product initiative: Autonomy v1.** Intended high-level outcome (see `CLAUDE.md` for the approved product north star; no technical architecture beyond what's listed below is decided):
 - scheduled agent wake-up that evaluates state rather than forcing content creation on every run;
 - continued autonomous cycle/content/asset work, with `NO_ACTION` remaining a valid outcome;
 - WhatsApp as the human-in-the-loop channel for approve/reject/revision-request/question-answer;
@@ -18,7 +18,7 @@ Running record of what is actually implemented and validated, kept current as ch
 - publication proceeding after human approval without routine dashboard operation;
 - first pilot: SolarDesk; target milestone: **"7 days without opening AlexAgent."**
 
-No WhatsApp integration, scheduler, or autonomous publication code exists in the repository yet — this section records intent only.
+**Phase 1A — authenticated headless wake entry point (SolarDesk only, implemented 2026-09-19):** `POST /api/cron/marketing-cycle` (`app/api/cron/marketing-cycle/route.ts`) lets an authenticated caller invoke the existing `runMarketingCycle({ brand: "solardesk", trigger: "scheduled" })` — the same domain function the manual "Run Marketing Cycle" button already calls — without a browser session. Authenticated by a dedicated server-side secret (`ALEXAGENT_CRON_SECRET`, checked via an `x-alexagent-cron-secret` header); the endpoint fails closed (refuses to run the agent) if that secret isn't configured, and an unauthenticated request never reaches `agent_runs`, Planner, or any agent state. No scheduler is connected to this endpoint yet — nothing calls it automatically. No asset generation or publication automation was added; those remain fully manual, exactly as before. The "7 days without opening AlexAgent" milestone has not started.
 
 ## v0.2 — Manual Facebook `image_post` publishing (closed 2026-09-16)
 

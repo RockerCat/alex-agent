@@ -3,11 +3,23 @@ import { createServerClient } from "@supabase/ssr";
 
 const PUBLIC_PATHS = ["/login", "/auth/callback"];
 
+// Machine-to-machine routes with their own non-session authentication
+// (a shared secret header, checked inside the Route Handler itself — see
+// app/api/cron/marketing-cycle/route.ts). These callers have no browser
+// session/cookie, so the session-based gate below must not apply to
+// them; redirecting a scheduler's POST to /login would make the
+// endpoint unreachable rather than making it more secure.
+const API_AUTH_EXEMPT_PREFIXES = ["/api/cron/"];
+
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (API_AUTH_EXEMPT_PREFIXES.some((p) => request.nextUrl.pathname.startsWith(p))) {
+    return response;
+  }
 
   if (!supabaseUrl || !supabaseAnonKey) {
     // Misconfigured deployment — fail closed rather than silently allowing
