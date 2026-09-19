@@ -1,6 +1,24 @@
 # AlexAgent — Project Status
 
-Running record of what is actually implemented and validated, kept current as checkpoints close. Product vision lives in `AGENT.md`; the frozen v0.1 schema/behavior spec lives in `ALEXAGENT_V0.1_SPEC.md`. This file tracks *current state*, not design intent.
+Running record of what is actually implemented and validated, kept current as checkpoints close. Product vision lives in `AGENT.md`; the approved product north star and its invariants live in `CLAUDE.md`; the frozen v0.1 schema/behavior spec lives in `ALEXAGENT_V0.1_SPEC.md`. This file tracks *current state*, not design intent.
+
+## Current status summary (2026-09-19)
+
+**Completed and validated end-to-end:**
+- Facebook manual `image_post` publishing (SolarDesk).
+- Instagram manual `image_post` publishing (SolarDesk), including bounded media-container readiness handling before publish.
+
+**Known limitation:** Instagram carousel publishing is not implemented.
+
+**Next product initiative: Autonomy v1 — NOT YET DESIGNED OR STARTED.** Intended high-level outcome only (see `CLAUDE.md` for the approved product north star; no technical architecture below is decided):
+- scheduled agent wake-up that evaluates state rather than forcing content creation on every run;
+- continued autonomous cycle/content/asset work, with `NO_ACTION` remaining a valid outcome;
+- WhatsApp as the human-in-the-loop channel for approve/reject/revision-request/question-answer;
+- automatic resumption of the durable agent run after a human WhatsApp response;
+- publication proceeding after human approval without routine dashboard operation;
+- first pilot: SolarDesk; target milestone: **"7 days without opening AlexAgent."**
+
+No WhatsApp integration, scheduler, or autonomous publication code exists in the repository yet — this section records intent only.
 
 ## v0.2 — Manual Facebook `image_post` publishing (closed 2026-09-16)
 
@@ -76,9 +94,7 @@ Publishing is entirely manual, same posture as Facebook: no cron, heartbeat, sch
 
 **Root causes found and fixed during this checkpoint's smoke:** (1) the originally configured Instagram account identifier did not match the Instagram User ID associated with the configured Instagram Login token — corrected in server-side env configuration; (2) the client originally called the Facebook Graph API host, which an Instagram Login token cannot authenticate against (`OAuthException` code 190) — corrected to the Instagram Graph API host; (3) the missing readiness polling described above.
 
-**Out of scope for this checkpoint** (future work): Instagram carousel/Stories/Reels publishing, scheduled/automated publishing, token rotation automation, cross-channel performance/engagement signal back into Planner context.
-
-**Next milestone:** with manual Facebook and Instagram `image_post` publishing both closed and validated end-to-end, the human-in-the-loop approval and manual-publish model stays in place as-is; the next intended product milestone is progressing AlexAgent's autonomy per the Autonomy Model in `AGENT.md` ("Autonomy v1"). That milestone is not designed or started as part of this checkpoint.
+**Out of scope for this checkpoint** (future work): Instagram carousel/Stories/Reels publishing, scheduled/automated publishing, token rotation automation, cross-channel performance/engagement signal back into Planner context. See the current status summary above for the next product initiative (Autonomy v1).
 
 ## v0.2 — Deterministic marketing-cycle expiry (closed 2026-09-16)
 
