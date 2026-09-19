@@ -68,12 +68,14 @@ export const env = {
   // Server-side only; never expose via NEXT_PUBLIC_*.
   metaInstagramAccessToken: () => process.env.META_INSTAGRAM_ACCESS_TOKEN?.trim() || null,
   metaInstagramAccountId: () => process.env.META_INSTAGRAM_ACCOUNT_ID?.trim() || null,
-  // Autonomy v1 Phase 1A: shared secret authenticating the headless
-  // scheduled-wake Route Handler (app/api/cron/marketing-cycle/route.ts)
-  // — a machine caller with no browser session, so it cannot use
-  // requireSession(). Nullable, same fail-closed posture as the Meta
-  // accessors above: absent config must make the endpoint refuse to run
-  // the agent, never throw at import time. Dedicated to this one
-  // endpoint only — never reused for Meta/Supabase/session auth.
-  alexagentCronSecret: () => process.env.ALEXAGENT_CRON_SECRET?.trim() || null,
+  // Autonomy v1 Phase 1B: Vercel Cron's own reserved env var name —
+  // required to be exactly CRON_SECRET for Vercel to auto-inject
+  // `Authorization: Bearer <value>` on its scheduled GET request (see
+  // app/api/cron/marketing-cycle/route.ts and vercel.json). Nullable,
+  // same fail-closed posture as the Meta accessors above: absent config
+  // must make the endpoint refuse to run the agent, never throw at
+  // import time. A machine caller with no browser session, so it cannot
+  // use requireSession(); dedicated to this one endpoint only — never
+  // reused for Meta/Supabase/session auth.
+  cronSecret: () => process.env.CRON_SECRET?.trim() || null,
 };

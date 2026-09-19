@@ -5,17 +5,33 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { OpenAiClient } from "@/lib/agent/aiClient";
 import { runMarketingCycle } from "@/lib/agent/runtime";
 
-// Autonomy v1 Phase 1A — the authenticated headless entry point that lets
-// a future scheduler (not yet connected — see PROJECT_STATUS.md) wake
-// SolarDesk's existing marketing-cycle runtime without a browser session.
-// This is adaptor code only: it authenticates the caller and forwards to
-// the exact same runMarketingCycle() the manual "Run Marketing Cycle" UI
+// Autonomy v1 Phase 1B — the authenticated headless entry point that lets
+// Vercel Cron (see vercel.json; not yet configured with a real
+// CRON_SECRET in production — see PROJECT_STATUS.md) wake SolarDesk's
+// existing marketing-cycle runtime without a browser session. This is
+// adaptor code only: it authenticates the caller and forwards to the
+// exact same runMarketingCycle() the manual "Run Marketing Cycle" UI
 // button already calls (see runMarketingCycleAction in app/actions.ts) —
 // all lock/preflight/Budget Guard/resume behavior is unchanged and lives
 // there, not here. No asset generation or publication is triggered by
 // this endpoint; runMarketingCycle() never reaches those steps itself.
+//
+// GET + `Authorization: Bearer <CRON_SECRET>` is Vercel Cron's native,
+// non-configurable contract (fixed GET method; auto-injects this header
+// only for an env var named exactly CRON_SECRET) — see
+// https://vercel.com/docs/cron-jobs/manage-cron-jobs. The prior
+// custom-header contract had no real external caller, so it was
+// replaced outright rather than kept alongside this.
 
-const CRON_SECRET_HEADER = "x-alexagent-cron-secret";
+const BEARER_PREFIX = "Bearer ";
+
+function extractBearerToken(authorizationHeader: string | null): string | null {
+  if (!authorizationHeader || !authorizationHeader.startsWith(BEARER_PREFIX)) {
+    return null;
+  }
+  const token = authorizationHeader.slice(BEARER_PREFIX.length);
+  return token.length > 0 ? token : null;
+}
 
 function secretsMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
@@ -26,16 +42,16 @@ function secretsMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(providedBuf, expectedBuf);
 }
 
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   // Fail closed: an unconfigured secret must refuse every request, never
   // fall back to allowing the call through or to session-based auth.
-  const expectedSecret = env.alexagentCronSecret();
+  const expectedSecret = env.cronSecret();
   if (!expectedSecret) {
     return NextResponse.json({ ok: false, error: "not_configured" }, { status: 503 });
   }
 
-  const provided = request.headers.get(CRON_SECRET_HEADER);
-  if (!provided || !secretsMatch(provided, expectedSecret)) {
+  const token = extractBearerToken(request.headers.get("authorization"));
+  if (!token || !secretsMatch(token, expectedSecret)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 

@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Autonomy v1 Phase 1A — tests the authenticated headless Route Handler
+// Autonomy v1 Phase 1B — tests the authenticated headless Route Handler
 // (app/api/cron/marketing-cycle/route.ts) in isolation: no real Supabase
 // or OpenAI client is ever constructed here. runMarketingCycle() itself
 // is already covered by its own test suites (marketingCycleExpiry.test.ts,
 // the acceptance suite, etc.) — this file only proves the Route
-// Handler's own job: authenticate, then forward to that exact function
-// with the exact expected arguments, and translate its result into a
-// safe response.
+// Handler's own job: authenticate against Vercel Cron's native
+// GET + `Authorization: Bearer <CRON_SECRET>` contract, then forward to
+// that exact function with the exact expected arguments, and translate
+// its result into a safe response.
 
 const { runMarketingCycleMock } = vi.hoisted(() => ({ runMarketingCycleMock: vi.fn() }));
 
@@ -25,66 +26,90 @@ vi.mock("@/lib/agent/aiClient", () => ({
   }),
 }));
 
-import { POST } from "@/app/api/cron/marketing-cycle/route";
+import * as route from "@/app/api/cron/marketing-cycle/route";
+const { GET } = route;
 
 const SECRET = "test-cron-secret-do-not-use-in-prod";
-const HEADER = "x-alexagent-cron-secret";
 
-function postRequest(headers: Record<string, string> = {}): Request {
+function getRequest(authorization?: string): Request {
+  const headers: Record<string, string> = {};
+  if (authorization !== undefined) headers.authorization = authorization;
   return new Request("http://localhost/api/cron/marketing-cycle", {
-    method: "POST",
+    method: "GET",
     headers,
   });
 }
 
-describe("POST /api/cron/marketing-cycle", () => {
+describe("GET /api/cron/marketing-cycle", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     runMarketingCycleMock.mockReset();
-    process.env.ALEXAGENT_CRON_SECRET = SECRET;
+    process.env.CRON_SECRET = SECRET;
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
   });
 
-  it("1. missing server-side ALEXAGENT_CRON_SECRET fails closed and never invokes the runtime", async () => {
-    delete process.env.ALEXAGENT_CRON_SECRET;
+  it("1. GET is the implemented execution method", () => {
+    expect(typeof route.GET).toBe("function");
+  });
 
-    const response = await POST(postRequest({ [HEADER]: SECRET }));
+  it("2. POST is no longer exported as an execution handler on this route", () => {
+    expect((route as Record<string, unknown>).POST).toBeUndefined();
+  });
+
+  it("3. missing server-side CRON_SECRET fails closed and never invokes the runtime", async () => {
+    delete process.env.CRON_SECRET;
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
 
     expect(response.status).toBe(503);
     expect(runMarketingCycleMock).not.toHaveBeenCalled();
   });
 
-  it("2. a missing auth header is rejected and never invokes the runtime", async () => {
-    const response = await POST(postRequest());
+  it("4. a missing Authorization header is rejected and never invokes the runtime", async () => {
+    const response = await GET(getRequest());
 
     expect(response.status).toBe(401);
     expect(runMarketingCycleMock).not.toHaveBeenCalled();
   });
 
-  it("3. an invalid auth header is rejected and never invokes the runtime", async () => {
-    const response = await POST(postRequest({ [HEADER]: "wrong-secret" }));
+  it("5. an invalid auth scheme is rejected", async () => {
+    const response = await GET(getRequest(`Basic ${SECRET}`));
 
     expect(response.status).toBe(401);
     expect(runMarketingCycleMock).not.toHaveBeenCalled();
   });
 
-  it("4. an invalid header of a different length than the real secret is rejected safely", async () => {
-    const response = await POST(postRequest({ [HEADER]: "short" }));
+  it("6. an empty Bearer token is rejected", async () => {
+    const response = await GET(getRequest("Bearer "));
 
     expect(response.status).toBe(401);
     expect(runMarketingCycleMock).not.toHaveBeenCalled();
   });
 
-  it("5. a valid secret invokes the existing runtime with brand: solardesk, trigger: scheduled", async () => {
+  it("7. a wrong Bearer token is rejected", async () => {
+    const response = await GET(getRequest("Bearer wrong-secret"));
+
+    expect(response.status).toBe(401);
+    expect(runMarketingCycleMock).not.toHaveBeenCalled();
+  });
+
+  it("8. a Bearer token of a different length than the real secret is rejected safely", async () => {
+    const response = await GET(getRequest("Bearer short"));
+
+    expect(response.status).toBe(401);
+    expect(runMarketingCycleMock).not.toHaveBeenCalled();
+  });
+
+  it("9. a valid Authorization: Bearer <CRON_SECRET> invokes the existing runtime with brand: solardesk, trigger: scheduled", async () => {
     runMarketingCycleMock.mockResolvedValue({
       run: { id: "run-1", status: "completed", decision: "NO_ACTION" },
     });
 
-    await POST(postRequest({ [HEADER]: SECRET }));
+    await GET(getRequest(`Bearer ${SECRET}`));
 
     expect(runMarketingCycleMock).toHaveBeenCalledTimes(1);
     const call = runMarketingCycleMock.mock.calls[0][0];
@@ -94,12 +119,12 @@ describe("POST /api/cron/marketing-cycle", () => {
     expect(call.aiClient).toBeDefined();
   });
 
-  it("6. a successful wake returns a safe, minimal JSON response", async () => {
+  it("10. a successful wake returns a safe, minimal JSON response", async () => {
     runMarketingCycleMock.mockResolvedValue({
       run: { id: "run-1", status: "completed", decision: "NO_ACTION" },
     });
 
-    const response = await POST(postRequest({ [HEADER]: SECRET }));
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -112,13 +137,13 @@ describe("POST /api/cron/marketing-cycle", () => {
     });
   });
 
-  it("7. a concurrent/skipped result is represented safely", async () => {
+  it("11. a concurrent/skipped result is represented safely", async () => {
     runMarketingCycleMock.mockResolvedValue({
       run: { id: "run-2", status: "skipped", decision: null },
       concurrent: true,
     });
 
-    const response = await POST(postRequest({ [HEADER]: SECRET }));
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -127,10 +152,10 @@ describe("POST /api/cron/marketing-cycle", () => {
     expect(body.status).toBe("skipped");
   });
 
-  it("8. a runtime failure returns a safe server error without leaking internal details", async () => {
+  it("12. a runtime failure returns a safe server error without leaking internal details", async () => {
     runMarketingCycleMock.mockRejectedValue(new Error("service_role key rejected by postgres at 10.0.0.4:5432"));
 
-    const response = await POST(postRequest({ [HEADER]: SECRET }));
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
     const body = await response.json();
     const bodyText = JSON.stringify(body);
 
@@ -140,14 +165,26 @@ describe("POST /api/cron/marketing-cycle", () => {
     expect(bodyText).not.toContain("postgres");
   });
 
-  it("9. the response never echoes the configured secret", async () => {
+  it("13. the response never echoes the configured secret", async () => {
     runMarketingCycleMock.mockResolvedValue({
       run: { id: "run-1", status: "completed", decision: "NO_ACTION" },
     });
 
-    const response = await POST(postRequest({ [HEADER]: SECRET }));
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
     const bodyText = JSON.stringify(await response.json());
 
     expect(bodyText).not.toContain(SECRET);
+  });
+});
+
+describe("vercel.json cron configuration", () => {
+  it("contains exactly the SolarDesk daily wake — no other cron entries", async () => {
+    const vercelConfig = (await import("@/vercel.json")).default as {
+      crons: { path: string; schedule: string }[];
+    };
+
+    expect(vercelConfig.crons).toHaveLength(1);
+    expect(vercelConfig.crons[0].path).toBe("/api/cron/marketing-cycle");
+    expect(vercelConfig.crons[0].schedule).toBe("0 13 * * *");
   });
 });
