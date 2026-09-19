@@ -132,6 +132,30 @@ async function main() {
   if (!publicationBlocked) throw new Error("Expected unique index to block a duplicate (asset_id, channel) publication");
   console.log("OK: asset_publications (asset_id, channel) unique index enforced");
 
+  // Exercise the widened asset_publications.channel CHECK constraint
+  // (0008_asset_publications_instagram_channel.sql): 'instagram' must
+  // now be accepted as its own independent (asset_id, channel) slot,
+  // and an unrecognized channel must still be rejected.
+  await db.query(
+    `insert into asset_publications (asset_id, draft_id, brand, channel, status)
+     values ($1, $2, 'solardesk', 'instagram', 'publishing');`,
+    [assetId, draftId]
+  );
+  console.log("OK: asset_publications.channel accepts 'instagram'");
+
+  let unknownChannelBlocked = false;
+  try {
+    await db.query(
+      `insert into asset_publications (asset_id, draft_id, brand, channel, status)
+       values ($1, $2, 'solardesk', 'twitter', 'publishing');`,
+      [assetId, draftId]
+    );
+  } catch (err) {
+    unknownChannelBlocked = /asset_publications_channel_check/.test(String(err));
+  }
+  if (!unknownChannelBlocked) throw new Error("Expected CHECK constraint to reject an unrecognized channel");
+  console.log("OK: asset_publications.channel rejects an unrecognized channel");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

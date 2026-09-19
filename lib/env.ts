@@ -58,4 +58,14 @@ export const env = {
   // comparison, fixed by correcting the value) — see PROJECT_STATUS.md.
   metaFacebookPageAccessToken: () => process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN?.trim() || null,
   metaFacebookPageId: () => process.env.META_FACEBOOK_PAGE_ID?.trim() || null,
+  // Instagram publishing readiness (env/config contract only — see
+  // lib/agent/instagramClient.ts). Same nullable + `.trim()` pattern as
+  // the Facebook vars above, for the same reasons: publishing is a
+  // manually-triggered capability, not something every code path
+  // needs, so a missing value must surface as a safe "not configured"
+  // result rather than an uncaught throw at import time; trimming
+  // guards against incidental whitespace from how the value was set.
+  // Server-side only; never expose via NEXT_PUBLIC_*.
+  metaInstagramAccessToken: () => process.env.META_INSTAGRAM_ACCESS_TOKEN?.trim() || null,
+  metaInstagramAccountId: () => process.env.META_INSTAGRAM_ACCOUNT_ID?.trim() || null,
 };

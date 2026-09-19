@@ -2,7 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { generateAssetAction, approveAssetAction, requestAssetChangesAction, publishAssetToFacebookAction } from "@/app/actions";
+import {
+  generateAssetAction,
+  approveAssetAction,
+  requestAssetChangesAction,
+  publishAssetToFacebookAction,
+  publishAssetToInstagramAction,
+} from "@/app/actions";
 import type { ContentAssetRow, AssetPublicationRow, Channel } from "@/lib/types/database";
 import type { AssetFeedbackInterpretationSummary } from "@/lib/agent/assetRevision";
 import type { VisualStrategy } from "@/lib/agent/schemas";
@@ -65,6 +71,13 @@ export function AssetPanel({
   const [interpretation, setInterpretation] = useState<AssetFeedbackInterpretationSummary | null>(null);
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+
+  // Channel type only ever holds "facebook" | "instagram" — this is the
+  // single place the publish control branches by channel, so the
+  // Facebook button/copy/color below are byte-for-byte what they were
+  // before Instagram existed.
+  const channelLabel = draftChannel === "instagram" ? "Instagram" : "Facebook";
+  const channelColor = draftChannel === "instagram" ? "#C13584" : "#1877F2";
 
   function generate() {
     setError(null);
@@ -130,15 +143,18 @@ export function AssetPanel({
     setPublishError(null);
     startTransition(async () => {
       try {
-        const result = await publishAssetToFacebookAction(draftId, asset.id);
+        const result =
+          draftChannel === "instagram"
+            ? await publishAssetToInstagramAction(draftId, asset.id)
+            : await publishAssetToFacebookAction(draftId, asset.id);
         if (result.status !== "success") {
-          setPublishError(result.message ?? "Could not publish to Facebook.");
+          setPublishError(result.message ?? `Could not publish to ${channelLabel}.`);
         } else {
           setShowPublishConfirm(false);
         }
         router.refresh();
       } catch (err) {
-        setPublishError(err instanceof Error ? err.message : "Could not publish to Facebook.");
+        setPublishError(err instanceof Error ? err.message : `Could not publish to ${channelLabel}.`);
       }
     });
   }
@@ -214,7 +230,7 @@ export function AssetPanel({
           {asset.status === "ready_to_publish" && publication?.status === "published" && (
             <div className="rounded-md border p-3 text-sm" style={{ borderColor: "#16a34a", background: "#f0fdf4" }}>
               <p className="font-semibold" style={{ color: "#166534" }}>
-                Published to Facebook
+                Published to {channelLabel}
               </p>
               <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
                 Post {publication.meta_post_id} · {publication.published_at ? new Date(publication.published_at).toLocaleString() : ""}
@@ -234,15 +250,15 @@ export function AssetPanel({
                 Approve Asset
               </button>
             )}
-            {asset.status === "ready_to_publish" && draftChannel === "facebook" && publication?.status !== "published" && (
+            {asset.status === "ready_to_publish" && publication?.status !== "published" && (
               <button
                 type="button"
                 disabled={isPending}
                 onClick={() => setShowPublishConfirm((v) => !v)}
                 className="rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50"
-                style={{ background: "#1877F2", color: "white" }}
+                style={{ background: channelColor, color: "white" }}
               >
-                Publish to Facebook
+                Publish to {channelLabel}
               </button>
             )}
             {(asset.status === "pending_review" || asset.status === "ready_to_publish") && (
@@ -267,11 +283,13 @@ export function AssetPanel({
             </button>
           </div>
 
-          {showPublishConfirm && asset.status === "ready_to_publish" && draftChannel === "facebook" && publication?.status !== "published" && (
-            <div className="rounded-md border p-3 space-y-2" style={{ borderColor: "#1877F2" }}>
-              <p className="text-sm font-medium">Publish this exact image and caption to the SolarDesk Facebook page now?</p>
+          {showPublishConfirm && asset.status === "ready_to_publish" && publication?.status !== "published" && (
+            <div className="rounded-md border p-3 space-y-2" style={{ borderColor: channelColor }}>
+              <p className="text-sm font-medium">
+                Publish this exact image and caption to the SolarDesk {channelLabel} {draftChannel === "instagram" ? "account" : "page"} now?
+              </p>
               <p className="text-xs" style={{ color: "var(--muted)" }}>
-                This creates a real, public post on Facebook. It cannot be undone from here.
+                This creates a real, public post on {channelLabel}. It cannot be undone from here.
               </p>
               <div className="flex gap-2">
                 <button
@@ -279,9 +297,9 @@ export function AssetPanel({
                   disabled={isPending}
                   onClick={publish}
                   className="rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50"
-                  style={{ background: "#1877F2", color: "white" }}
+                  style={{ background: channelColor, color: "white" }}
                 >
-                  {isPending ? "Publishing…" : "Confirm & Publish to Facebook"}
+                  {isPending ? "Publishing…" : `Confirm & Publish to ${channelLabel}`}
                 </button>
                 <button
                   type="button"

@@ -11,6 +11,7 @@ import { AssetStorageError } from "@/lib/agent/assetStorage";
 export class FakeAssetStorage implements AssetStorage {
   files = new Map<string, Buffer>();
   failNextUpload = false;
+  failNextSignedUrl = false;
 
   async upload(path: string, data: Buffer): Promise<void> {
     if (this.failNextUpload) {
@@ -24,6 +25,10 @@ export class FakeAssetStorage implements AssetStorage {
   }
 
   async createSignedUrl(path: string): Promise<string | null> {
+    if (this.failNextSignedUrl) {
+      this.failNextSignedUrl = false;
+      return null;
+    }
     if (!this.files.has(path)) return null;
     return `https://fake-storage.local/${path}?signed=1`;
   }

@@ -12,8 +12,9 @@ import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
-import { publishAssetToFacebook } from "@/lib/agent/publish";
+import { publishAssetToFacebook, publishAssetToInstagram } from "@/lib/agent/publish";
 import { MetaGraphFacebookClient } from "@/lib/agent/facebookClient";
+import { MetaGraphInstagramClient } from "@/lib/agent/instagramClient";
 import type { FeedbackCategory } from "@/lib/agent/constants";
 
 async function assertAuthorized() {
@@ -136,6 +137,26 @@ export async function publishAssetToFacebookAction(draftId: string, assetId: str
   const storage = new SupabaseAssetStorage(db);
   const facebookClient = new MetaGraphFacebookClient();
   const result = await publishAssetToFacebook({ db, storage, facebookClient, draftId, assetId });
+  revalidatePath(`/approvals/${draftId}`);
+  return result;
+}
+
+// Manual-only, Instagram-only (Instagram publishing readiness
+// checkpoint): exists solely so Alex can explicitly click "Publish to
+// Instagram" on a Ready-to-publish image_post asset. Never invoked
+// automatically — same posture as publishAssetToFacebookAction above.
+// All eligibility/idempotency checks happen server-side in
+// lib/agent/publish.ts; this action only constructs the real
+// dependencies (Supabase admin client, asset storage, the existing
+// MetaGraphInstagramClient, which reads META_INSTAGRAM_ACCESS_TOKEN /
+// META_INSTAGRAM_ACCOUNT_ID from env internally) and forwards the
+// result — it never touches the token itself.
+export async function publishAssetToInstagramAction(draftId: string, assetId: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const storage = new SupabaseAssetStorage(db);
+  const instagramClient = new MetaGraphInstagramClient();
+  const result = await publishAssetToInstagram({ db, storage, instagramClient, draftId, assetId });
   revalidatePath(`/approvals/${draftId}`);
   return result;
 }

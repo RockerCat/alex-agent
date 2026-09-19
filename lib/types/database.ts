@@ -178,7 +178,7 @@ export type ContentAssetRow = {
   approved_at: string | null;
 }
 
-export type PublicationChannel = "facebook";
+export type PublicationChannel = "facebook" | "instagram";
 export type PublicationStatus = "publishing" | "published" | "failed";
 
 export type AssetPublicationRow = {

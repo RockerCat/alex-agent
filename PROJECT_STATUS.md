@@ -39,6 +39,47 @@ Publishing is entirely manual — there is no cron, heartbeat, scheduling, or au
 
 **Out of scope for this checkpoint** (future work): Instagram publishing, carousel publishing, scheduled/automated publishing, token rotation automation, additional Meta permissions.
 
+## v0.2 — Manual Instagram `image_post` publishing (closed 2026-09-19)
+
+Approved SolarDesk `image_post` drafts can now also be published to the real SolarDesk.co Instagram account, manually, from the same AlexAgent UI, alongside (and independent of) Facebook publishing:
+
+```
+Approved draft → content_asset (ready_to_publish) → explicit "Publish to Instagram"
+→ explicit confirmation → server-side publish orchestration
+→ Meta Graph API POST /{ig-user-id}/media → bounded container-readiness polling
+→ POST /{ig-user-id}/media_publish (only once FINISHED) → real public Instagram post
+→ publication record persisted → UI shows "Published to Instagram"
+```
+
+Publishing is entirely manual, same posture as Facebook: no cron, heartbeat, scheduling, or autopublish. Publishing never invokes the Planner, Executor, Visual Director, or any image generation/regeneration — it publishes exactly the already-approved image and caption, with the same shared CTA-destination caption composition used for Facebook.
+
+**Implementation:**
+- `lib/agent/instagramClient.ts` — thin server-side Instagram Graph API client. Uses the **Instagram Graph API host** (`https://graph.instagram.com`, API version `v24.0`), not the Facebook Graph API host — Instagram Login tokens are a separate API family from a Facebook Page token and are not interchangeable between hosts. Facebook publishing (`lib/agent/facebookClient.ts`) is untouched and remains independently on `https://graph.facebook.com/v26.0`.
+- `lib/agent/publish.ts` (`publishAssetToInstagram`) — reuses the exact same eligibility-guard / idempotency-claim / persistence orchestration as `publishAssetToFacebook`, parametrized by channel, plus one Instagram-specific step: bounded media-container readiness polling between create and publish (see below).
+- `supabase/migrations/0008_asset_publications_instagram_channel.sql` — widens the existing `asset_publications.channel` CHECK constraint to accept `'instagram'` alongside `'facebook'`; the `(asset_id, channel)` unique constraint (from `0006`) already made this a genuinely independent per-channel slot with no schema change needed. Already applied to the live Supabase project.
+- `app/actions.ts` (`publishAssetToInstagramAction`) and `components/AssetPanel.tsx` — manual trigger + confirmation UI, branching by the draft's own channel (Facebook's button/copy/color are unchanged for Facebook-channel drafts).
+
+**Auth model:** Instagram Login (Business Login) access token + Instagram User ID → server-side env (`META_INSTAGRAM_ACCESS_TOKEN`, `META_INSTAGRAM_ACCOUNT_ID`). Credentials are server-side only, never exposed to the browser, never logged, never committed.
+
+**Media-container readiness polling** (`lib/agent/publish.ts`): Meta processes a newly-created single-image container asynchronously; publishing before it's ready is what produces a real `"Media ID is not available"` rejection. Before calling `/media_publish`, AlexAgent now polls `GET /{container-id}?fields=status_code` (fixed 1500ms interval, max 6 checks, ~7.5s added wait at most):
+- `IN_PROGRESS` → wait, poll again.
+- `FINISHED` → proceed to publish.
+- `ERROR` / `EXPIRED` → fail immediately, no publish call.
+- `PUBLISHED` → fail conservatively, never call publish again on that container.
+- Malformed/unrecognized status, or exhausting all attempts still `IN_PROGRESS` → fail safely with a typed error.
+
+**Idempotency / failure semantics:** identical guarantees to Facebook (see above), independently per `(asset_id, channel)` — a Facebook publication for an asset never blocks an Instagram publication for the same asset, and vice versa. Any readiness-polling failure or timeout flows through the same `markPublicationFailed` path as a create/publish rejection, so the slot remains safely reclaimable on retry.
+
+**Current format support:** `image_post` only. Instagram carousel publishing is **not implemented** — real Planner-generated Instagram carousel content exists, but publishing it is separate future work; the Planner itself was not changed to force image-only output.
+
+**Live smoke — PASS (2026-09-19):** Publishing a controlled approved Instagram `image_post` asset through the real AlexAgent UI produced a real, public post on the SolarDesk.co Instagram account, independently confirmed visible on the account, and AlexAgent correctly persisted the publication and showed "Published to Instagram."
+
+**Root causes found and fixed during this checkpoint's smoke:** (1) the originally configured Instagram account identifier did not match the Instagram User ID associated with the configured Instagram Login token — corrected in server-side env configuration; (2) the client originally called the Facebook Graph API host, which an Instagram Login token cannot authenticate against (`OAuthException` code 190) — corrected to the Instagram Graph API host; (3) the missing readiness polling described above.
+
+**Out of scope for this checkpoint** (future work): Instagram carousel/Stories/Reels publishing, scheduled/automated publishing, token rotation automation, cross-channel performance/engagement signal back into Planner context.
+
+**Next milestone:** with manual Facebook and Instagram `image_post` publishing both closed and validated end-to-end, the human-in-the-loop approval and manual-publish model stays in place as-is; the next intended product milestone is progressing AlexAgent's autonomy per the Autonomy Model in `AGENT.md` ("Autonomy v1"). That milestone is not designed or started as part of this checkpoint.
+
 ## v0.2 — Deterministic marketing-cycle expiry (closed 2026-09-16)
 
 **Bug discovered during the real 2026-09-16 manual `Run Marketing Cycle` smoke:** a marketing plan's `status` never left `'active'` once created — no code path transitioned it to `completed`/`superseded`, even after its `period_end` had passed. An expired plan would have stayed the apparent "current cycle" forever, permanently blocking `CREATE_PLAN` for that brand until someone manually edited the database.

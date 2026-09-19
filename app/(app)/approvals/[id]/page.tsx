@@ -43,7 +43,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
     latestAsset?.storage_path
       ? await new SupabaseAssetStorage(db).createSignedUrl(latestAsset.storage_path, 3600)
       : null;
-  const publication = latestAsset ? await getPublication(db, latestAsset.id) : null;
+  // draft.channel is "facebook" | "instagram" — the exact same union as
+  // PublicationChannel, so the draft's own channel is always the right
+  // slot to read (getPublication still defaults to "facebook" for any
+  // other caller that predates this).
+  const publication = latestAsset ? await getPublication(db, latestAsset.id, draft.channel) : null;
 
   return (
     <div className="space-y-4">
