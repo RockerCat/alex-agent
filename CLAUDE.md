@@ -14,6 +14,12 @@ Each brand's agent is expected to wake on a regular schedule, evaluate current m
 
 **Product isolation between brands is required.** Brands share AlexAgent's infrastructure/code, never product truth: credentials, business rules, and brand context must not be copied or leaked between SolarDesk, MiPadel.Club, and Odentia just because they run on the same platform.
 
+## Current SolarDesk wake implementation
+
+SolarDesk's autonomous wake runs on **Vercel Cron** today: `GET /api/cron/marketing-cycle`, authenticated with Vercel's native contract (`Authorization: Bearer <CRON_SECRET>`, a server-only env var), scheduled via `vercel.json` to wake once daily (`0 13 * * *` UTC). This scheduler cadence wakes the agent only — it must never be read as, or made to imply, a required content-creation or publication cadence. The route is adaptor code only: it authenticates the caller and forwards to the existing `runMarketingCycle({ brand, trigger: "scheduled" })` domain entry point, the same one the manual "Run Marketing Cycle" button calls. All lock/preflight/Budget Guard/`NO_ACTION`/`WAIT_FOR_APPROVAL` semantics live in that domain function and remain authoritative — future scheduler or multi-brand work must keep reusing that entry point rather than building parallel orchestration around it.
+
+Stored timestamps remain UTC. Any user-facing presentation that needs local time must render in the *browser's* timezone (a Client Component), never the server/Vercel runtime's timezone.
+
 ## WhatsApp as the intended primary human-in-the-loop interface
 
 The intended end-state is that Alex's routine involvement happens over WhatsApp instead of the AlexAgent dashboard: reviewing a proposed publication (including its generated content) and responding approve / reject / request changes; requested changes eventually feeding the existing revision workflow; and any genuine factual/human-input question AlexAgent has being asked (and answered) over WhatsApp, resuming the durable agent run. This is product direction, not a shipped feature — WhatsApp provider, webhook design, message protocol, and persistence architecture are all future decisions, not yet made.

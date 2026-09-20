@@ -5,6 +5,7 @@ import { runMarketingCycleAction } from "@/app/actions";
 import { RunCycleButton } from "@/components/RunCycleButton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { BudgetBar } from "@/components/BudgetBar";
+import { LocalDateTime } from "@/components/LocalDateTime";
 
 export const dynamic = "force-dynamic";
 
@@ -111,7 +112,7 @@ export default async function DashboardPage() {
                     {run.decision ?? run.status.toUpperCase()}
                   </span>
                   <span className="text-xs" style={{ color: "var(--muted)" }}>
-                    {new Date(run.createdAt).toLocaleString()}
+                    <LocalDateTime iso={run.createdAt} />
                   </span>
                 </div>
                 {run.summary && <p style={{ color: "var(--muted)" }}>{run.summary}</p>}
