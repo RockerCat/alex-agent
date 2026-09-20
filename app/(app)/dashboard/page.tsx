@@ -5,6 +5,7 @@ import { runMarketingCycleAction } from "@/app/actions";
 import { RunCycleButton } from "@/components/RunCycleButton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { BudgetBar } from "@/components/BudgetBar";
+import { DailySpend } from "@/components/DailySpend";
 import { LocalDateTime } from "@/components/LocalDateTime";
 
 export const dynamic = "force-dynamic";
@@ -94,7 +95,8 @@ export default async function DashboardPage() {
       </Card>
 
       <Card>
-        <BudgetBar budget={data.budget} />
+        <BudgetBar budget={data.budget} brandMonthlySpentUsd={data.brandMonthlySpentUsd} />
+        <DailySpend brand="solardesk" />
       </Card>
 
       <Card>

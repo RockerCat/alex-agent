@@ -20,6 +20,8 @@ SolarDesk's autonomous wake runs on **Vercel Cron** today: `GET /api/cron/market
 
 Stored timestamps remain UTC. Any user-facing presentation that needs local time must render in the *browser's* timezone (a Client Component), never the server/Vercel runtime's timezone.
 
+**AI usage ledger is brand-attributed; spend reporting must remain brand-scoped while the current Budget Guard ceiling remains global.** Every `ai_usage` row already carries the real `brand` it belongs to. Per-brand spend *display* (e.g. a Dashboard's monthly/Today/Daily-avg figures) must filter by that brand. Budget *enforcement* (the monthly effective-stop/per-run check that actually blocks a paid call) must stay a single shared pool across every brand, as it is today — do not make enforcement per-brand without an explicit product decision to do so.
+
 ## WhatsApp as the intended primary human-in-the-loop interface
 
 The intended end-state is that Alex's routine involvement happens over WhatsApp instead of the AlexAgent dashboard: reviewing a proposed publication (including its generated content) and responding approve / reject / request changes; requested changes eventually feeding the existing revision workflow; and any genuine factual/human-input question AlexAgent has being asked (and answered) over WhatsApp, resuming the durable agent run. This is product direction, not a shipped feature — WhatsApp provider, webhook design, message protocol, and persistence architecture are all future decisions, not yet made.

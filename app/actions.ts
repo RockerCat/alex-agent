@@ -15,7 +15,8 @@ import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
 import { publishAssetToFacebook, publishAssetToInstagram } from "@/lib/agent/publish";
 import { MetaGraphFacebookClient } from "@/lib/agent/facebookClient";
 import { MetaGraphInstagramClient } from "@/lib/agent/instagramClient";
-import type { FeedbackCategory } from "@/lib/agent/constants";
+import { BudgetGuard } from "@/lib/agent/budgetGuard";
+import { SUPPORTED_BRANDS, type FeedbackCategory, type SupportedBrand } from "@/lib/agent/constants";
 
 async function assertAuthorized() {
   const user = await requireSession();
@@ -32,6 +33,41 @@ export async function runMarketingCycleAction() {
   revalidatePath("/dashboard");
   revalidatePath("/approvals");
   revalidatePath("/questions");
+}
+
+function isSupportedBrand(value: string): value is SupportedBrand {
+  return (SUPPORTED_BRANDS as readonly string[]).includes(value);
+}
+
+/**
+ * Powers Dashboard "Today"/"Daily avg." (components/DailySpend.tsx).
+ * The boundaries are computed in the caller's browser (its real local
+ * calendar day/month start) and passed in — this action never guesses
+ * a timezone itself, so the same brand-scoped read works unchanged for
+ * a future MiPadel.Club/Odentia dashboard. Read-only, display-only:
+ * never touches Budget Guard enforcement (which stays global).
+ */
+export async function getBrandSpendSummaryAction(params: {
+  brand: string;
+  todayStartIso: string;
+  monthStartIso: string;
+}): Promise<{ todayUsd: number; monthToDateUsd: number } | { error: string }> {
+  await assertAuthorized();
+
+  if (!isSupportedBrand(params.brand)) {
+    return { error: "Unsupported brand." };
+  }
+  if (Number.isNaN(Date.parse(params.todayStartIso)) || Number.isNaN(Date.parse(params.monthStartIso))) {
+    return { error: "Invalid date boundary." };
+  }
+
+  const db = supabaseAdmin();
+  const budgetGuard = new BudgetGuard(db);
+  const [todayUsd, monthToDateUsd] = await Promise.all([
+    budgetGuard.getBrandSpendSince(params.brand, params.todayStartIso),
+    budgetGuard.getBrandSpendSince(params.brand, params.monthStartIso),
+  ]);
+  return { todayUsd, monthToDateUsd };
 }
 
 export async function approveDraftAction(draftId: string) {

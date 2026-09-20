@@ -133,6 +133,37 @@ export class BudgetGuard {
     return { allowed: true, snapshot };
   }
 
+  /**
+   * Bounded, brand-scoped spend sum from `sinceIso` onward — a display
+   * read path only, never used for budget enforcement (which stays
+   * global via getSnapshot()/checkBeforeCall() above; the monthly
+   * budget/effective-stop/per-run ceiling in agent_settings remains a
+   * single global pool shared by every brand — spec section 20). This
+   * never guesses a timezone or "since" boundary itself: the caller
+   * (e.g. a future per-brand Dashboard) supplies it, so it works
+   * identically for SolarDesk and any future brand without this method
+   * hardcoding either one.
+   */
+  async getBrandSpendSince(brand: string, sinceIso: string): Promise<number> {
+    const { data, error } = await this.db
+      .from("ai_usage")
+      .select("estimated_cost_usd")
+      .eq("brand", brand)
+      .gte("created_at", sinceIso);
+    if (error) throw new Error(`Unable to load ai_usage: ${error.message}`);
+    return (data ?? []).reduce((sum, row) => sum + Number(row.estimated_cost_usd ?? 0), 0);
+  }
+
+  /**
+   * Brand-scoped counterpart to getSnapshot()'s global monthlySpentUsd —
+   * same UTC-month-start definition, display only. Used to show "how
+   * much of the shared budget did THIS brand spend," never to decide
+   * whether the agent is blocked (that stays global).
+   */
+  async getBrandMonthlySpend(brand: string): Promise<number> {
+    return this.getBrandSpendSince(brand, monthStartIso());
+  }
+
   /** Records actual usage after a model call completes. */
   async recordUsage(params: {
     agentRunId: string | null;

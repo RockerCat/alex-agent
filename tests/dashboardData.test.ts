@@ -74,3 +74,23 @@ describe("loadDashboardData — expired active plan is not shown as Current cycl
     expect(data.activePlan?.periodEnd).toBe("2026-09-24");
   });
 });
+
+describe("loadDashboardData — AI spend is brand-scoped for display, budget enforcement stays global", () => {
+  it("brandMonthlySpentUsd excludes another brand's spend; the global budget snapshot still includes it", async () => {
+    const fake = createFakeDb();
+    seedDefaultSettings(fake, { monthly_budget_usd: 10.0, safety_reserve_usd: 0.5 });
+    const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString();
+    fake.seed("ai_usage", [
+      { id: "u1", agent_run_id: null, brand: "solardesk", operation: "executor", model: "gpt-5.6-luna", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0.3, created_at: monthStart },
+      { id: "u2", agent_run_id: null, brand: "mipadel", operation: "executor", model: "gpt-5.6-luna", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 5.0, created_at: monthStart },
+    ]);
+    const db = asSupabaseClient<SupabaseClient<Database>>(fake);
+
+    const data = await loadDashboardData(db);
+
+    expect(data.brandMonthlySpentUsd).toBeCloseTo(0.3, 6);
+    // The real enforcement snapshot must still see the full shared pool
+    // (both brands) — display scoping must never leak into enforcement.
+    expect(data.budget.monthlySpentUsd).toBeCloseTo(5.3, 6);
+  });
+});

@@ -10,6 +10,12 @@ export interface DashboardData {
     solardeskEnabled: boolean;
   };
   budget: BudgetSnapshot;
+  // Brand-scoped monthly spend for display only — the ceiling/reserve/
+  // per-run limits and the enforcement `status` above still come from
+  // the global `budget` snapshot (Budget Guard enforcement stays a
+  // single shared pool across every brand). This is "how much of that
+  // shared pool did THIS brand use," not a per-brand budget.
+  brandMonthlySpentUsd: number;
   activePlan: {
     id: string;
     primaryObjective: string;
@@ -39,6 +45,7 @@ export async function loadDashboardData(
   const { data: settings } = await db.from("agent_settings").select("*").eq("singleton", true).single();
   const budgetGuard = new BudgetGuard(db);
   const budget = await budgetGuard.getSnapshot();
+  const brandMonthlySpentUsd = await budgetGuard.getBrandMonthlySpend(brand);
 
   const { data: activeRun } = await db
     .from("agent_runs")
@@ -90,6 +97,7 @@ export async function loadDashboardData(
     status,
     settings: { solardeskEnabled: Boolean(settings?.solardesk_enabled) },
     budget,
+    brandMonthlySpentUsd,
     activePlan: currentPlan
       ? {
           id: currentPlan.id,

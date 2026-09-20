@@ -84,4 +84,56 @@ describe("Acceptance E — Budget Enforcement", () => {
     const snapshot = await guard.getSnapshot();
     expect(snapshot.thresholdLevel).toBe("warning");
   });
+
+  describe("brand-scoped spend display vs. global enforcement", () => {
+    function seedTwoBrandUsage(fake: ReturnType<typeof createFakeDb>) {
+      const now = new Date().toISOString();
+      fake.seed("ai_usage", [
+        { id: "u1", agent_run_id: null, brand: "solardesk", operation: "planner", model: "gpt-4.1", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0.3, created_at: now },
+        { id: "u2", agent_run_id: null, brand: "mipadel", operation: "planner", model: "gpt-4.1", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 5.0, created_at: now },
+      ]);
+    }
+
+    it("getBrandMonthlySpend/getBrandSpendSince exclude another brand's usage", async () => {
+      const fake = createFakeDb();
+      seedDefaultSettings(fake);
+      seedTwoBrandUsage(fake);
+      const db = asSupabaseClient<SupabaseClient<Database>>(fake);
+      const guard = new BudgetGuard(db);
+
+      const solardeskSpend = await guard.getBrandMonthlySpend("solardesk");
+      const mipadelSpend = await guard.getBrandMonthlySpend("mipadel");
+
+      expect(solardeskSpend).toBeCloseTo(0.3, 6);
+      expect(mipadelSpend).toBeCloseTo(5.0, 6);
+    });
+
+    it("global getSnapshot()/checkBeforeCall() enforcement still sees every brand's usage combined", async () => {
+      const fake = createFakeDb();
+      seedDefaultSettings(fake, { monthly_budget_usd: 10.0, safety_reserve_usd: 0.5 });
+      seedTwoBrandUsage(fake);
+      const db = asSupabaseClient<SupabaseClient<Database>>(fake);
+      const guard = new BudgetGuard(db);
+
+      const snapshot = await guard.getSnapshot();
+      // 0.3 + 5.0 = 5.3, combined across brands — enforcement is a
+      // single shared pool, not per-brand.
+      expect(snapshot.monthlySpentUsd).toBeCloseTo(5.3, 6);
+
+      // A brand with near-zero of its own spend is still blocked once
+      // the *shared* pool (another brand's usage included) exhausts the
+      // effective stop — proving enforcement never became per-brand.
+      fake.seed("ai_usage", [
+        { id: "u1", agent_run_id: null, brand: "solardesk", operation: "planner", model: "gpt-4.1", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0.01, created_at: new Date().toISOString() },
+        { id: "u2", agent_run_id: null, brand: "mipadel", operation: "planner", model: "gpt-4.1", input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, estimated_cost_usd: 9.6, created_at: new Date().toISOString() },
+      ]);
+      const check = await guard.checkBeforeCall({
+        agentRunId: "run-1",
+        model: "gpt-4.1",
+        approxInputTokens: 100,
+        approxMaxOutputTokens: 100,
+      });
+      expect(check.allowed).toBe(false);
+    });
+  });
 });
