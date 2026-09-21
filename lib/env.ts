@@ -119,4 +119,13 @@ export const env = {
   // notification can still degrade to sending its text without a link
   // if this is unset, never throw.
   appBaseUrl: () => process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, "") || null,
+  // WhatsApp Cloud API webhook verification (see
+  // app/api/webhooks/whatsapp/route.ts, lib/agent/whatsappWebhook.ts).
+  // Meta's GET handshake echoes this back only when it matches exactly
+  // what's configured in the Meta App Dashboard's webhook setup — a
+  // separate secret from META_WHATSAPP_ACCESS_TOKEN, never reused for
+  // it. Nullable, same fail-closed posture as the other Meta accessors:
+  // an unconfigured token must make the endpoint refuse verification
+  // (503), never fall back to accepting any token.
+  metaWhatsappWebhookVerifyToken: () => process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN?.trim() || null,
 };

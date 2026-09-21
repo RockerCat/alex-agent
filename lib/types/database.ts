@@ -212,6 +212,10 @@ export type NotificationChannel = "whatsapp";
 export type NotificationType = "draft_pending_approval" | "blocking_question";
 export type NotificationSubjectType = "content_draft" | "agent_question";
 export type NotificationStatus = "pending" | "sent" | "failed";
+// Meta's own asynchronous delivery-status callback — a separate signal
+// from NotificationStatus above (which means "accepted by Meta"); see
+// lib/agent/whatsappWebhook.ts.
+export type NotificationProviderStatus = "sent" | "delivered" | "read" | "failed";
 
 export type NotificationOutboxRow = {
   id: string;
@@ -228,6 +232,10 @@ export type NotificationOutboxRow = {
   created_at: string;
   updated_at: string;
   sent_at: string | null;
+  provider_status: NotificationProviderStatus | null;
+  provider_status_at: string | null;
+  provider_error_code: number | null;
+  provider_error_detail: string | null;
 }
 
 // Matches @supabase/postgrest-js's GenericTable/GenericSchema shape so the
