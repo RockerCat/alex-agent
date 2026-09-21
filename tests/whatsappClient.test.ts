@@ -90,6 +90,31 @@ describe("MetaGraphWhatsAppClient", () => {
     ]);
   });
 
+  it("2b. strips newline/tab characters and collapses runs of spaces in body parameters (Meta #132018)", async () => {
+    const capture = captureFetch();
+    capture.install();
+    const client = new MetaGraphWhatsAppClient();
+
+    await client.sendTemplateMessage({
+      to: DESTINATION,
+      templateName: "alexagent_attention_required",
+      languageCode: "es_CO",
+      bodyParameters: ["SolarDesk", "una publicación pendiente de aprobación", "Título del borrador\nhttps://example.com/approvals/abc123"],
+    });
+
+    const body = JSON.parse(capture.calls[0].init.body as string);
+    expect(body.template.components).toEqual([
+      {
+        type: "body",
+        parameters: [
+          { type: "text", text: "SolarDesk" },
+          { type: "text", text: "una publicación pendiente de aprobación" },
+          { type: "text", text: "Título del borrador https://example.com/approvals/abc123" },
+        ],
+      },
+    ]);
+  });
+
   it("3. never puts the access token in the request URL", async () => {
     const capture = captureFetch();
     capture.install();

@@ -25,6 +25,19 @@ const GRAPH_API_HOST = "https://graph.facebook.com";
 
 export class WhatsAppSendError extends Error {}
 
+/**
+ * Meta's Cloud API rejects template BODY parameter values containing
+ * newline/tab characters or long runs of spaces (observed in production
+ * as error #132018, "There's an issue with the parameters in your
+ * template") — this tripped on notifications.ts's
+ * `${truncated}\n${approvalUrl}` draft-attention value. Sanitizing here,
+ * once, keeps every caller's parameter values Meta-contract-compliant
+ * without each call site having to know about this restriction.
+ */
+function sanitizeParameterText(text: string): string {
+  return text.replace(/[\n\t]+/g, " ").replace(/ {2,}/g, " ").trim();
+}
+
 export interface WhatsAppTemplateMessageInput {
   /** E.164 destination number, e.g. "+573001234567". */
   to: string;
@@ -66,7 +79,7 @@ export class MetaGraphWhatsAppClient implements WhatsAppGraphClient {
         components: [
           {
             type: "body",
-            parameters: input.bodyParameters.map((text) => ({ type: "text", text })),
+            parameters: input.bodyParameters.map((text) => ({ type: "text", text: sanitizeParameterText(text) })),
           },
         ],
       },
