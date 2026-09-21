@@ -208,6 +208,28 @@ export type AiUsageRow = {
   created_at: string;
 }
 
+export type NotificationChannel = "whatsapp";
+export type NotificationType = "draft_pending_approval" | "blocking_question";
+export type NotificationSubjectType = "content_draft" | "agent_question";
+export type NotificationStatus = "pending" | "sent" | "failed";
+
+export type NotificationOutboxRow = {
+  id: string;
+  brand: string;
+  channel: NotificationChannel;
+  notification_type: NotificationType;
+  subject_type: NotificationSubjectType;
+  subject_id: string;
+  subject_version: number;
+  status: NotificationStatus;
+  provider_message_id: string | null;
+  error_message: string | null;
+  agent_run_id: string | null;
+  created_at: string;
+  updated_at: string;
+  sent_at: string | null;
+}
+
 // Matches @supabase/postgrest-js's GenericTable/GenericSchema shape so the
 // client's generic inference resolves properly instead of collapsing to
 // `never`. This app has no foreign-table `.select()` embeds, so
@@ -231,6 +253,7 @@ export type Database = {
       asset_publications: TableDef<AssetPublicationRow>;
       agent_questions: TableDef<AgentQuestionRow>;
       ai_usage: TableDef<AiUsageRow>;
+      notification_outbox: TableDef<NotificationOutboxRow>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -24,7 +24,13 @@ Stored timestamps remain UTC. Any user-facing presentation that needs local time
 
 ## WhatsApp as the intended primary human-in-the-loop interface
 
-The intended end-state is that Alex's routine involvement happens over WhatsApp instead of the AlexAgent dashboard: reviewing a proposed publication (including its generated content) and responding approve / reject / request changes; requested changes eventually feeding the existing revision workflow; and any genuine factual/human-input question AlexAgent has being asked (and answered) over WhatsApp, resuming the durable agent run. This is product direction, not a shipped feature — WhatsApp provider, webhook design, message protocol, and persistence architecture are all future decisions, not yet made.
+The intended end-state is that Alex's routine involvement happens over WhatsApp instead of the AlexAgent dashboard: reviewing a proposed publication (including its generated content) and responding approve / reject / request changes; requested changes eventually feeding the existing revision workflow; and any genuine factual/human-input question AlexAgent has being asked (and answered) over WhatsApp, resuming the durable agent run. Inbound handling (webhooks, approve/reject/question commands) is still future direction, not yet built — WhatsApp provider, webhook design, message protocol, and persistence architecture for that side are not yet decided.
+
+**Outbound-only attention notifications are implemented** (`lib/agent/notifications.ts`, `lib/agent/whatsappClient.ts` — see `PROJECT_STATUS.md` for current external/template status). Durable invariants that implementation, and any future WhatsApp work, must preserve:
+- WhatsApp is an **adapter over the existing durable `content_drafts`/`agent_questions` workflow, never a second approval system** — it only reads that state and sends a message; it must never itself create, approve, reject, or revise anything, and human editorial approval in the existing dashboard workflow stays authoritative.
+- WhatsApp has its own dedicated Meta credentials (`META_WHATSAPP_*`) — never reuse the Facebook Page or Instagram Login tokens; each Meta capability in this app is credential-isolated (see the Facebook/Instagram clients).
+- Notification idempotency is keyed by **subject identity + version** (e.g. `brand + draft_id + draft.version` for a draft, a stable version for a question), never by `agent_run_id` — a new daily wake observing the same unresolved item must never re-notify, while a genuine revision must be able to notify again.
+- A provider/notification failure must never mutate draft/question state and must never fail or roll back an already-completed marketing-cycle wake.
 
 ## Initial autonomy boundary
 

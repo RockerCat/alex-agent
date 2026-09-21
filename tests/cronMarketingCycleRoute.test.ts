@@ -10,7 +10,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // that exact function with the exact expected arguments, and translate
 // its result into a safe response.
 
-const { runMarketingCycleMock } = vi.hoisted(() => ({ runMarketingCycleMock: vi.fn() }));
+const { runMarketingCycleMock, notifyAttentionIfNeededMock } = vi.hoisted(() => ({
+  runMarketingCycleMock: vi.fn(),
+  notifyAttentionIfNeededMock: vi.fn(),
+}));
 
 vi.mock("@/lib/agent/runtime", () => ({
   runMarketingCycle: runMarketingCycleMock,
@@ -23,6 +26,16 @@ vi.mock("@/lib/supabase/admin", () => ({
 vi.mock("@/lib/agent/aiClient", () => ({
   OpenAiClient: vi.fn().mockImplementation(function FakeOpenAiClient() {
     return { __fake: "aiClient" };
+  }),
+}));
+
+vi.mock("@/lib/agent/notifications", () => ({
+  notifyAttentionIfNeeded: notifyAttentionIfNeededMock,
+}));
+
+vi.mock("@/lib/agent/whatsappClient", () => ({
+  MetaGraphWhatsAppClient: vi.fn().mockImplementation(function FakeWhatsAppClient() {
+    return { __fake: "whatsappClient" };
   }),
 }));
 
@@ -45,6 +58,8 @@ describe("GET /api/cron/marketing-cycle", () => {
 
   beforeEach(() => {
     runMarketingCycleMock.mockReset();
+    notifyAttentionIfNeededMock.mockReset();
+    notifyAttentionIfNeededMock.mockResolvedValue({ attempted: 0, sent: 0, alreadySent: 0, failed: 0, skippedNotConfigured: true });
     process.env.CRON_SECRET = SECRET;
   });
 
@@ -174,6 +189,47 @@ describe("GET /api/cron/marketing-cycle", () => {
     const bodyText = JSON.stringify(await response.json());
 
     expect(bodyText).not.toContain(SECRET);
+  });
+
+  it("14. invokes the WhatsApp attention notification service after a successful wake, with the run's id/decision/brand", async () => {
+    runMarketingCycleMock.mockResolvedValue({
+      run: { id: "run-1", status: "completed", decision: "WAIT_FOR_APPROVAL" },
+    });
+
+    await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(notifyAttentionIfNeededMock).toHaveBeenCalledTimes(1);
+    const call = notifyAttentionIfNeededMock.mock.calls[0][0];
+    expect(call.brand).toBe("solardesk");
+    expect(call.runId).toBe("run-1");
+    expect(call.runDecision).toBe("WAIT_FOR_APPROVAL");
+    expect(call.whatsappClient).toBeDefined();
+    expect(call.db).toBeDefined();
+  });
+
+  it("15. a WhatsApp notification failure does not fail the successful cron marketing-cycle response", async () => {
+    runMarketingCycleMock.mockResolvedValue({
+      run: { id: "run-1", status: "completed", decision: "WAIT_FOR_APPROVAL" },
+    });
+    notifyAttentionIfNeededMock.mockRejectedValue(new Error("Meta WhatsApp send failed with a raw provider stack trace"));
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      ok: true,
+      runId: "run-1",
+      status: "completed",
+      decision: "WAIT_FOR_APPROVAL",
+      concurrent: false,
+    });
+  });
+
+  it("16. an authentication failure never invokes the WhatsApp notification service", async () => {
+    await GET(getRequest("Bearer wrong-secret"));
+
+    expect(notifyAttentionIfNeededMock).not.toHaveBeenCalled();
   });
 });
 

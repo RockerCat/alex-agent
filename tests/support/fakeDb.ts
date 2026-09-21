@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 type Row = Record<string, unknown>;
-type Filter = { col: string; op: "eq" | "gte" | "lt"; val: unknown };
+type Filter = { col: string; op: "eq" | "neq" | "gte" | "lt"; val: unknown };
 
 function nowIso() {
   return new Date().toISOString();
@@ -17,6 +17,7 @@ function matchesFilters(row: Row, filters: Filter[]): boolean {
   return filters.every((f) => {
     const v = row[f.col];
     if (f.op === "eq") return v === f.val;
+    if (f.op === "neq") return v !== f.val;
     if (f.op === "gte") return (v as string) >= (f.val as string);
     if (f.op === "lt") return (v as string) < (f.val as string);
     return true;
@@ -39,6 +40,18 @@ function checkUniqueConstraints(table: string, candidate: Row, existing: Row[]):
   if (table === "asset_publications") {
     const clash = existing.some((r) => r.asset_id === candidate.asset_id && r.channel === candidate.channel);
     if (clash) return `duplicate key value violates unique constraint "asset_publications_asset_id_channel_key"`;
+  }
+  if (table === "notification_outbox") {
+    const clash = existing.some(
+      (r) =>
+        r.brand === candidate.brand &&
+        r.channel === candidate.channel &&
+        r.notification_type === candidate.notification_type &&
+        r.subject_type === candidate.subject_type &&
+        r.subject_id === candidate.subject_id &&
+        r.subject_version === candidate.subject_version
+    );
+    if (clash) return `duplicate key value violates unique constraint "notification_outbox_brand_channel_notification_type_subjec"`;
   }
   return null;
 }
@@ -70,6 +83,16 @@ function defaultsForTable(table: string): Row {
         published_at: null,
         error_message: null,
         updated_at: nowIso(),
+      };
+    case "notification_outbox":
+      return {
+        subject_version: 1,
+        status: "pending",
+        provider_message_id: null,
+        error_message: null,
+        agent_run_id: null,
+        updated_at: nowIso(),
+        sent_at: null,
       };
     default:
       return {};
@@ -110,6 +133,11 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
 
   eq(col: string, val: unknown) {
     this.filters.push({ col, op: "eq", val });
+    return this;
+  }
+
+  neq(col: string, val: unknown) {
+    this.filters.push({ col, op: "neq", val });
     return this;
   }
 

@@ -156,6 +156,36 @@ async function main() {
   if (!unknownChannelBlocked) throw new Error("Expected CHECK constraint to reject an unrecognized channel");
   console.log("OK: asset_publications.channel rejects an unrecognized channel");
 
+  // Exercise the notification_outbox unique identity (0009) — the actual
+  // duplicate-notification guard: the same (brand, channel,
+  // notification_type, subject_type, subject_id, subject_version) must
+  // not be insertable twice, but a different subject_version (a real
+  // draft revision) must be its own independent slot.
+  await db.query(
+    `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status)
+     values ('solardesk', 'whatsapp', 'draft_pending_approval', 'content_draft', $1, 1, 'pending');`,
+    [draftId]
+  );
+  let notificationBlocked = false;
+  try {
+    await db.query(
+      `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status)
+       values ('solardesk', 'whatsapp', 'draft_pending_approval', 'content_draft', $1, 1, 'pending');`,
+      [draftId]
+    );
+  } catch (err) {
+    notificationBlocked = /notification_outbox_brand_channel_notification_type_subjec/.test(String(err)) || /duplicate key/.test(String(err));
+  }
+  if (!notificationBlocked) throw new Error("Expected unique index to block a duplicate notification identity");
+  console.log("OK: notification_outbox unique identity enforced");
+
+  await db.query(
+    `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status)
+     values ('solardesk', 'whatsapp', 'draft_pending_approval', 'content_draft', $1, 2, 'pending');`,
+    [draftId]
+  );
+  console.log("OK: notification_outbox allows a new subject_version as an independent notification");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

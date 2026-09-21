@@ -78,4 +78,45 @@ export const env = {
   // use requireSession(); dedicated to this one endpoint only — never
   // reused for Meta/Supabase/session auth.
   cronSecret: () => process.env.CRON_SECRET?.trim() || null,
+  // WhatsApp outbound attention notifications (Autonomy v1 — see
+  // lib/agent/whatsappClient.ts). Its own dedicated Meta credentials —
+  // a WhatsApp Cloud API access token and phone number ID are NOT the
+  // same credential type as a Facebook Page token or an Instagram Login
+  // token (confirmed by inspecting those two clients: each Meta
+  // capability here has always had its own isolated env pair, never a
+  // shared "Meta credentials" object), so this must never fall back to
+  // metaFacebookPageAccessToken()/metaInstagramAccessToken(). Nullable,
+  // same fail-closed posture as the other Meta accessors: a missing
+  // value must surface as a safe "not configured" result, never an
+  // uncaught throw at import time. Server-side only; never expose via
+  // NEXT_PUBLIC_*.
+  metaWhatsappAccessToken: () => process.env.META_WHATSAPP_ACCESS_TOKEN?.trim() || null,
+  metaWhatsappPhoneNumberId: () => process.env.META_WHATSAPP_PHONE_NUMBER_ID?.trim() || null,
+  // Alex's own destination number for this single-owner, single-brand
+  // first slice — an env var (not a persisted settings row) is the
+  // right level of durability here, matching the existing single-owner
+  // ownerEmail() pattern above; this should move to persisted,
+  // per-brand settings only once there is more than one recipient/brand
+  // to notify (MiPadel.Club/Odentia — not implemented here).
+  metaWhatsappDestinationNumber: () => process.env.META_WHATSAPP_DESTINATION_NUMBER?.trim() || null,
+  // The approved-pending Meta template name/language are configuration,
+  // not something to hardcode in lib/agent/whatsappClient.ts or
+  // lib/agent/notifications.ts — overridable, but defaulted to the
+  // real template already submitted for review (see PROJECT_STATUS.md).
+  // "es_CO" (Spanish — Colombia) is Meta's documented language code for
+  // that locale; reconfirm against the current Meta template-language
+  // reference if the template's approved language ever differs.
+  metaWhatsappTemplateName: () => process.env.META_WHATSAPP_TEMPLATE_NAME?.trim() || "alexagent_attention_required",
+  metaWhatsappTemplateLanguage: () => process.env.META_WHATSAPP_TEMPLATE_LANGUAGE?.trim() || "es_CO",
+  // Needed to build a real, clickable /approvals/<draft.id> link inside
+  // a WhatsApp message (see lib/agent/notifications.ts). No existing
+  // accessor in this file already does this — repo-wide search found
+  // none. Deliberately NOT read from Vercel's own auto-injected
+  // VERCEL_URL/VERCEL_PROJECT_PRODUCTION_URL here: their exact current
+  // semantics (preview vs. production, protocol) should be confirmed
+  // against current Vercel documentation before relying on them
+  // instead of this explicit, unambiguous override. Nullable — a
+  // notification can still degrade to sending its text without a link
+  // if this is unset, never throw.
+  appBaseUrl: () => process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, "") || null,
 };

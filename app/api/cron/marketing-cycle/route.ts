@@ -4,6 +4,8 @@ import { env } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { OpenAiClient } from "@/lib/agent/aiClient";
 import { runMarketingCycle } from "@/lib/agent/runtime";
+import { notifyAttentionIfNeeded } from "@/lib/agent/notifications";
+import { MetaGraphWhatsAppClient } from "@/lib/agent/whatsappClient";
 
 // Autonomy v1 Phase 1B — the authenticated headless entry point that lets
 // Vercel Cron (see vercel.json; not yet configured with a real
@@ -62,6 +64,30 @@ export async function GET(request: Request) {
     const db = supabaseAdmin();
     const aiClient = new OpenAiClient();
     const result = await runMarketingCycle({ db, aiClient, brand: "solardesk", trigger: "scheduled" });
+
+    // Only after the marketing cycle's own durable state is fully
+    // finalized (runMarketingCycle has already returned) — this must
+    // never affect the response above, which reflects a completed
+    // cycle regardless of what happens here. Independently wrapped: a
+    // WhatsApp/config/provider failure is caught, safely persisted per
+    // notification_outbox item inside notifyAttentionIfNeeded itself,
+    // and only ever logged here — never re-thrown, never changes the
+    // HTTP status/body already decided above.
+    try {
+      const whatsappClient = new MetaGraphWhatsAppClient();
+      await notifyAttentionIfNeeded({
+        db,
+        whatsappClient,
+        brand: "solardesk",
+        runId: result.run.id,
+        runDecision: result.run.decision,
+      });
+    } catch (notifyErr) {
+      // Never let a bug in the notification layer itself (as opposed to
+      // a provider-level failure, which notifyAttentionIfNeeded already
+      // catches internally) affect this successful cron response.
+      console.error("WhatsApp attention notification dispatch failed:", notifyErr instanceof Error ? notifyErr.message : "unknown error");
+    }
 
     return NextResponse.json({
       ok: true,

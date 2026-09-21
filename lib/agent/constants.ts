@@ -63,3 +63,13 @@ export type FeedbackCategory = (typeof FEEDBACK_CATEGORIES)[number];
 
 export const SUPPORTED_BRANDS = ["solardesk"] as const;
 export type SupportedBrand = (typeof SUPPORTED_BRANDS)[number];
+
+// Human-readable brand name for outbound surfaces (e.g. WhatsApp
+// attention notifications — lib/agent/notifications.ts) that must never
+// show a raw brand slug to Alex. Centralized here, next to
+// SUPPORTED_BRANDS, so adding a future brand (MiPadel.Club, Odentia)
+// updates both in one place rather than leaving notification logic to
+// invent or hardcode display copy per brand.
+export const BRAND_DISPLAY_NAMES: Record<SupportedBrand, string> = {
+  solardesk: "SolarDesk",
+};
