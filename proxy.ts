@@ -1,7 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-const PUBLIC_PATHS = ["/login", "/auth/callback"];
+// /privacy is Meta's required public Privacy Policy URL for app review
+// (see app/privacy/page.tsx) — a real page a human/reviewer loads in a
+// browser, so it belongs in PUBLIC_PATHS (a plain login-redirect
+// exemption) rather than API_AUTH_EXEMPT_PREFIXES below, which is
+// specifically for machine-to-machine routes with their own
+// non-session authentication.
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/privacy"];
 
 // Machine-to-machine routes with their own non-session authentication
 // (a shared secret header, checked inside the Route Handler itself — see

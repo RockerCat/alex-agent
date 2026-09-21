@@ -79,4 +79,18 @@ describe("proxy — session-auth routing", () => {
     const response = await proxy(makeRequest("/api/some-other-endpoint"));
     expect(response.status).toBe(307);
   });
+
+  it("8. an unauthenticated request to /privacy is not redirected to /login", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/privacy"));
+    expect(response.status).not.toBe(307);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("9. an unrelated protected route (/settings) remains protected after adding /privacy", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/settings"));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+  });
 });
