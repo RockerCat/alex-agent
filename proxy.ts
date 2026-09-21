@@ -9,7 +9,15 @@ const PUBLIC_PATHS = ["/login", "/auth/callback"];
 // session/cookie, so the session-based gate below must not apply to
 // them; redirecting a scheduler's POST to /login would make the
 // endpoint unreachable rather than making it more secure.
-const API_AUTH_EXEMPT_PREFIXES = ["/api/cron/"];
+//
+// /api/webhooks/whatsapp is the same shape: Meta calls it with no
+// AlexAgent session, and it already validates its own caller via
+// META_WHATSAPP_WEBHOOK_VERIFY_TOKEN on GET (see
+// lib/agent/whatsappWebhook.ts) — this exemption only lets the request
+// reach that check instead of being redirected to /login before it
+// gets there. Deliberately the exact route, not a broader "/api/webhooks/"
+// prefix, so no future unrelated webhook route is exempted by accident.
+const API_AUTH_EXEMPT_PREFIXES = ["/api/cron/", "/api/webhooks/whatsapp"];
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request });
