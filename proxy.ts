@@ -1,13 +1,24 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-// /privacy is Meta's required public Privacy Policy URL for app review
-// (see app/privacy/page.tsx) — a real page a human/reviewer loads in a
-// browser, so it belongs in PUBLIC_PATHS (a plain login-redirect
-// exemption) rather than API_AUTH_EXEMPT_PREFIXES below, which is
-// specifically for machine-to-machine routes with their own
-// non-session authentication.
-const PUBLIC_PATHS = ["/login", "/auth/callback", "/privacy"];
+// /privacy and /data-deletion are Meta's required public URLs for app
+// review (see app/privacy/page.tsx, app/data-deletion/page.tsx) — real
+// pages a human/reviewer loads in a browser, so they belong in
+// PUBLIC_PATHS (a plain login-redirect exemption) rather than
+// API_AUTH_EXEMPT_PREFIXES below, which is specifically for
+// machine-to-machine routes with their own non-session authentication.
+//
+// Matched below via exact-path-or-subpath ("p" itself, or "p/...") —
+// NOT plain startsWith — specifically so that e.g. a hypothetical
+// future "/data-deletion-test" route is never accidentally exempted by
+// sharing a text prefix with "/data-deletion". This does not change
+// matching for any currently existing route: none of today's real
+// routes share a prefix stem with an entry here without a "/" boundary.
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/privacy", "/data-deletion"];
+
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
 
 // Machine-to-machine routes with their own non-session authentication
 // (a shared secret header, checked inside the Route Handler itself — see
@@ -55,7 +66,7 @@ export async function proxy(request: NextRequest) {
   });
 
   const { data } = await supabase.auth.getUser();
-  const isPublic = PUBLIC_PATHS.some((p) => request.nextUrl.pathname.startsWith(p));
+  const isPublic = isPublicPath(request.nextUrl.pathname);
 
   const ownerEmail = process.env.OWNER_EMAIL;
   const authorized = Boolean(data.user) && (!ownerEmail || data.user?.email === ownerEmail);

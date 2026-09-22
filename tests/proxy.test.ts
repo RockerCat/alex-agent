@@ -93,4 +93,37 @@ describe("proxy — session-auth routing", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toContain("/login");
   });
+
+  it("10. an unauthenticated request to /data-deletion is not redirected to /login", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/data-deletion"));
+    expect(response.status).not.toBe(307);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("11. /privacy remains public after adding /data-deletion", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/privacy"));
+    expect(response.status).not.toBe(307);
+  });
+
+  it("12. a representative protected route (/dashboard) remains protected after adding /data-deletion", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/dashboard"));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+  });
+
+  it("13. a similarly-named unrelated route (/data-deletion-test) is NOT exempted by the /data-deletion addition", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/data-deletion-test"));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+  });
+
+  it("14. the existing WhatsApp webhook exemption remains intact after adding /data-deletion", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/api/webhooks/whatsapp"));
+    expect(response.status).not.toBe(307);
+  });
 });
