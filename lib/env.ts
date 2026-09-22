@@ -128,4 +128,15 @@ export const env = {
   // an unconfigured token must make the endpoint refuse verification
   // (503), never fall back to accepting any token.
   metaWhatsappWebhookVerifyToken: () => process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN?.trim() || null,
+  // WhatsApp Inbound Phase 1 (see app/api/webhooks/whatsapp/route.ts,
+  // lib/agent/whatsappWebhook.ts's verifyWebhookSignature). The Meta App
+  // Secret used to verify `X-Hub-Signature-256` on every inbound POST —
+  // required once a POST can trigger a real approve/reject mutation
+  // (unlike the outbound-only diagnostics era, where an unauthenticated
+  // POST could only write diagnostic fields). A separate secret from
+  // META_WHATSAPP_ACCESS_TOKEN/META_WHATSAPP_WEBHOOK_VERIFY_TOKEN — never
+  // reuse either for it. Nullable, same fail-closed posture as every
+  // other Meta credential here: missing config must make the webhook
+  // refuse every POST, never fall back to accepting an unsigned one.
+  metaWhatsappAppSecret: () => process.env.META_WHATSAPP_APP_SECRET?.trim() || null,
 };

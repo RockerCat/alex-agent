@@ -238,6 +238,30 @@ export type NotificationOutboxRow = {
   provider_error_detail: string | null;
 }
 
+// WhatsApp Inbound Phase 1 (see lib/agent/whatsappInboundCommands.ts).
+// Deliberately excludes sender/destination phone numbers and raw message
+// text — see supabase/migrations/0011_whatsapp_inbound_events.sql for why.
+export type WhatsappInboundCommand = "aprobar" | "rechazar";
+export type WhatsappInboundOutcome =
+  | "processing"
+  | "approved"
+  | "rejected"
+  | "state_guard_failed"
+  | "unsupported_command"
+  | "no_candidate"
+  | "ambiguous_candidates"
+  | "unresolved_context"
+  | "unauthorized_sender";
+
+export type WhatsappInboundEventRow = {
+  id: string;
+  provider_message_id: string;
+  command: WhatsappInboundCommand | null;
+  resolved_draft_id: string | null;
+  outcome: WhatsappInboundOutcome;
+  created_at: string;
+}
+
 // Matches @supabase/postgrest-js's GenericTable/GenericSchema shape so the
 // client's generic inference resolves properly instead of collapsing to
 // `never`. This app has no foreign-table `.select()` embeds, so
@@ -262,6 +286,7 @@ export type Database = {
       agent_questions: TableDef<AgentQuestionRow>;
       ai_usage: TableDef<AiUsageRow>;
       notification_outbox: TableDef<NotificationOutboxRow>;
+      whatsapp_inbound_events: TableDef<WhatsappInboundEventRow>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 type Row = Record<string, unknown>;
-type Filter = { col: string; op: "eq" | "neq" | "gte" | "lt"; val: unknown };
+type Filter = { col: string; op: "eq" | "neq" | "gte" | "lt" | "in"; val: unknown };
 
 function nowIso() {
   return new Date().toISOString();
@@ -20,6 +20,7 @@ function matchesFilters(row: Row, filters: Filter[]): boolean {
     if (f.op === "neq") return v !== f.val;
     if (f.op === "gte") return (v as string) >= (f.val as string);
     if (f.op === "lt") return (v as string) < (f.val as string);
+    if (f.op === "in") return Array.isArray(f.val) && f.val.includes(v);
     return true;
   });
 }
@@ -52,6 +53,10 @@ function checkUniqueConstraints(table: string, candidate: Row, existing: Row[]):
         r.subject_version === candidate.subject_version
     );
     if (clash) return `duplicate key value violates unique constraint "notification_outbox_brand_channel_notification_type_subjec"`;
+  }
+  if (table === "whatsapp_inbound_events") {
+    const clash = existing.some((r) => r.provider_message_id === candidate.provider_message_id);
+    if (clash) return `duplicate key value violates unique constraint "whatsapp_inbound_events_provider_message_id_key"`;
   }
   return null;
 }
@@ -93,6 +98,16 @@ function defaultsForTable(table: string): Row {
         agent_run_id: null,
         updated_at: nowIso(),
         sent_at: null,
+        provider_status: null,
+        provider_status_at: null,
+        provider_error_code: null,
+        provider_error_detail: null,
+      };
+    case "whatsapp_inbound_events":
+      return {
+        command: null,
+        resolved_draft_id: null,
+        outcome: "processing",
       };
     default:
       return {};
@@ -138,6 +153,11 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
 
   neq(col: string, val: unknown) {
     this.filters.push({ col, op: "neq", val });
+    return this;
+  }
+
+  in(col: string, val: unknown[]) {
+    this.filters.push({ col, op: "in", val });
     return this;
   }
 

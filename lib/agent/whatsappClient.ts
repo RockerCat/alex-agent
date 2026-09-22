@@ -48,12 +48,27 @@ export interface WhatsAppTemplateMessageInput {
   bodyParameters: string[];
 }
 
+export interface WhatsAppTextMessageInput {
+  /** E.164 destination number, e.g. "+573001234567". */
+  to: string;
+  body: string;
+}
+
 export interface WhatsAppSendResult {
   messageId: string;
 }
 
 export interface WhatsAppGraphClient {
   sendTemplateMessage(input: WhatsAppTemplateMessageInput): Promise<WhatsAppSendResult>;
+  /**
+   * Free-text send — only valid within Meta's 24-hour customer-service
+   * window opened by an inbound message from the recipient (see
+   * lib/agent/whatsappInboundCommands.ts, the only caller: it replies to
+   * a command Alex just sent, so the window is always open). Never used
+   * for the daily attention notification itself, which must remain a
+   * template send (no inbound message has opened a window for it).
+   */
+  sendTextMessage(input: WhatsAppTextMessageInput): Promise<WhatsAppSendResult>;
 }
 
 /** True only when the WhatsApp access token, phone number id, and Alex's destination number are all explicitly configured. */
@@ -63,13 +78,7 @@ export function whatsappNotificationsCapabilityAvailable(): boolean {
 
 export class MetaGraphWhatsAppClient implements WhatsAppGraphClient {
   async sendTemplateMessage(input: WhatsAppTemplateMessageInput): Promise<WhatsAppSendResult> {
-    const phoneNumberId = env.metaWhatsappPhoneNumberId();
-    const accessToken = env.metaWhatsappAccessToken();
-    if (!phoneNumberId || !accessToken) {
-      throw new WhatsAppSendError("Meta WhatsApp configuration is missing.");
-    }
-
-    const body = {
+    return this.postMessage({
       messaging_product: "whatsapp",
       to: input.to,
       type: "template",
@@ -83,7 +92,24 @@ export class MetaGraphWhatsAppClient implements WhatsAppGraphClient {
           },
         ],
       },
-    };
+    });
+  }
+
+  async sendTextMessage(input: WhatsAppTextMessageInput): Promise<WhatsAppSendResult> {
+    return this.postMessage({
+      messaging_product: "whatsapp",
+      to: input.to,
+      type: "text",
+      text: { body: sanitizeParameterText(input.body) },
+    });
+  }
+
+  private async postMessage(body: Record<string, unknown>): Promise<WhatsAppSendResult> {
+    const phoneNumberId = env.metaWhatsappPhoneNumberId();
+    const accessToken = env.metaWhatsappAccessToken();
+    if (!phoneNumberId || !accessToken) {
+      throw new WhatsAppSendError("Meta WhatsApp configuration is missing.");
+    }
 
     let response: Response;
     try {

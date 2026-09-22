@@ -1,5 +1,13 @@
+import { createHmac } from "node:crypto";
 import { describe, it, expect } from "vitest";
-import { verifyWebhookChallenge, parseStatusEvents, recordProviderStatus } from "@/lib/agent/whatsappWebhook";
+import {
+  verifyWebhookChallenge,
+  verifyWebhookSignature,
+  parseStatusEvents,
+  recordProviderStatus,
+  parseInboundMessages,
+  resolveDraftForInboundCommand,
+} from "@/lib/agent/whatsappWebhook";
 import { createFakeDb, asSupabaseClient } from "@/tests/support/fakeDb";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/types/database";
@@ -306,5 +314,156 @@ describe("recordProviderStatus", () => {
     });
 
     expect(db.getAll("content_drafts")).toEqual([{ id: "draft-1", status: "pending_approval", version: 1 }]);
+  });
+});
+
+const APP_SECRET = "fake-app-secret-for-tests-only";
+
+function signBody(body: string, secret: string = APP_SECRET): string {
+  return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
+}
+
+describe("verifyWebhookSignature", () => {
+  it("18. accepts a correctly signed body", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    const signatureHeader = signBody(rawBody);
+    expect(verifyWebhookSignature({ rawBody, signatureHeader, appSecret: APP_SECRET })).toBe(true);
+  });
+
+  it("19. rejects a missing signature header", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    expect(verifyWebhookSignature({ rawBody, signatureHeader: null, appSecret: APP_SECRET })).toBe(false);
+  });
+
+  it("20. rejects a malformed signature header (no sha256= prefix)", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    expect(verifyWebhookSignature({ rawBody, signatureHeader: "not-a-valid-signature", appSecret: APP_SECRET })).toBe(false);
+  });
+
+  it("21. rejects an invalid signature (wrong secret)", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    const signatureHeader = signBody(rawBody, "a-different-secret");
+    expect(verifyWebhookSignature({ rawBody, signatureHeader, appSecret: APP_SECRET })).toBe(false);
+  });
+
+  it("22. rejects a signature computed over a different body (tampered payload)", () => {
+    const signatureHeader = signBody(JSON.stringify({ entry: [{ tampered: true }] }));
+    const rawBody = JSON.stringify({ entry: [] });
+    expect(verifyWebhookSignature({ rawBody, signatureHeader, appSecret: APP_SECRET })).toBe(false);
+  });
+
+  it("23. rejects a non-hex signature body without throwing", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    expect(verifyWebhookSignature({ rawBody, signatureHeader: `sha256=${"z".repeat(64)}`, appSecret: APP_SECRET })).toBe(false);
+  });
+
+  it("24. never leaks the app secret in its return value", () => {
+    const rawBody = JSON.stringify({ entry: [] });
+    const result = verifyWebhookSignature({ rawBody, signatureHeader: "sha256=wrong", appSecret: APP_SECRET });
+    expect(JSON.stringify(result)).not.toContain(APP_SECRET);
+  });
+});
+
+function inboundPayload(message: Record<string, unknown>) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              messaging_product: "whatsapp",
+              messages: [message],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("parseInboundMessages", () => {
+  it("25. extracts a text message with id/sender/type/body", () => {
+    const events = parseInboundMessages(inboundPayload({ id: "wamid.in-1", from: "573000000001", type: "text", timestamp: "1758452400", text: { body: "Aprobar" } }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ providerMessageId: "wamid.in-1", from: "573000000001", type: "text", textBody: "Aprobar", contextId: null });
+    expect(events[0].occurredAt).toBe(new Date(1758452400 * 1000).toISOString());
+  });
+
+  it("26. extracts context.id when the message is a reply", () => {
+    const events = parseInboundMessages(inboundPayload({ id: "wamid.in-1", from: "573000000001", type: "text", timestamp: "1758452400", text: { body: "Rechazar" }, context: { id: "wamid.original-1" } }));
+    expect(events[0].contextId).toBe("wamid.original-1");
+  });
+
+  it("27. a non-text message type carries no textBody but is still extracted (id/from/type)", () => {
+    const events = parseInboundMessages(inboundPayload({ id: "wamid.in-2", from: "573000000001", type: "image", timestamp: "1758452400" }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "image", textBody: null });
+  });
+
+  it("28. an unrelated webhook payload (status callback shape) yields no inbound events", () => {
+    const statusPayload = { entry: [{ changes: [{ value: { statuses: [{ id: "wamid.1", status: "delivered", timestamp: "1" }] } }] }] };
+    expect(parseInboundMessages(statusPayload)).toEqual([]);
+    expect(parseInboundMessages({})).toEqual([]);
+    expect(parseInboundMessages(null)).toEqual([]);
+  });
+
+  it("29. malformed/missing required fields are skipped, not thrown", () => {
+    expect(parseInboundMessages(inboundPayload({ from: "573000000001", type: "text", text: { body: "Aprobar" } }))).toEqual([]);
+    expect(parseInboundMessages(inboundPayload({ id: "wamid.in-1", type: "text", text: { body: "Aprobar" } }))).toEqual([]);
+  });
+});
+
+function seedPendingDraft(db: ReturnType<typeof createFakeDb>, overrides: Partial<Record<string, unknown>> = {}) {
+  db.seed("content_drafts", [
+    { id: "draft-1", brand: "solardesk", status: "pending_approval", version: 1, created_at: "2026-09-21T09:00:00.000Z", ...overrides },
+  ]);
+}
+
+describe("resolveDraftForInboundCommand", () => {
+  it("30. context.id resolves the exact draft via provider_message_id correlation", async () => {
+    const db = createFakeDb();
+    seedOutboxRow(db, { provider_message_id: "wamid.original-1", subject_id: "draft-1" });
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), "wamid.original-1");
+    expect(result).toEqual({ outcome: "resolved", draftId: "draft-1" });
+  });
+
+  it("31. a reply to an OLDER notification resolves that exact draft, not a newer one", async () => {
+    const db = createFakeDb();
+    db.seed("notification_outbox", [
+      { id: "outbox-old", brand: "solardesk", channel: "whatsapp", notification_type: "draft_pending_approval", subject_type: "content_draft", subject_id: "draft-old", subject_version: 1, status: "sent", provider_message_id: "wamid.old", created_at: "2026-09-20T09:00:00.000Z" },
+      { id: "outbox-new", brand: "solardesk", channel: "whatsapp", notification_type: "draft_pending_approval", subject_type: "content_draft", subject_id: "draft-new", subject_version: 1, status: "sent", provider_message_id: "wamid.new", created_at: "2026-09-21T09:00:00.000Z" },
+    ]);
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), "wamid.old");
+    expect(result).toEqual({ outcome: "resolved", draftId: "draft-old" });
+  });
+
+  it("32. a context.id that cannot be resolved mutates nothing and reports unresolved_context", async () => {
+    const db = createFakeDb();
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), "wamid.unknown");
+    expect(result).toEqual({ outcome: "unresolved_context" });
+  });
+
+  it("33. no context + exactly one pending candidate resolves it", async () => {
+    const db = createFakeDb();
+    seedPendingDraft(db);
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), null);
+    expect(result).toEqual({ outcome: "resolved", draftId: "draft-1" });
+  });
+
+  it("34. no context + zero pending candidates mutates nothing", async () => {
+    const db = createFakeDb();
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), null);
+    expect(result).toEqual({ outcome: "no_candidate" });
+  });
+
+  it("35. no context + multiple pending candidates mutates nothing (never guesses)", async () => {
+    const db = createFakeDb();
+    seedPendingDraft(db, { id: "draft-1" });
+    db.seed("content_drafts", [
+      { id: "draft-1", brand: "solardesk", status: "pending_approval", version: 1, created_at: "2026-09-21T09:00:00.000Z" },
+      { id: "draft-2", brand: "solardesk", status: "pending_approval", version: 1, created_at: "2026-09-21T09:05:00.000Z" },
+    ]);
+    const result = await resolveDraftForInboundCommand(asSupabaseClient<SupabaseClient<Database>>(db), null);
+    expect(result).toEqual({ outcome: "ambiguous_candidates" });
   });
 });
