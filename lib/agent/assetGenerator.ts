@@ -767,12 +767,71 @@ export interface ApproveAssetOutcome {
   ok: boolean;
   message?: string;
   asset?: ContentAssetRow;
+  /** True only when a guarded call (expectedAssetVersion) failed because the asset is not that version or has been superseded by a newer asset for its draft. */
+  staleVersion?: boolean;
 }
 
-export async function approveAsset(db: SupabaseClient<Database>, assetId: string): Promise<ApproveAssetOutcome> {
+export interface ApproveAssetOptions {
+  /**
+   * When provided (e.g. a version-bound email action), the approval only
+   * applies if — atomically, at mutation time — the asset IS this
+   * asset_version, is still pending_review, and is still the newest asset
+   * for its draft (see approveAssetVersionGuarded). An old review email
+   * must never approve a superseded asset. Omitted → unchanged legacy
+   * behavior (dashboard).
+   */
+  expectedAssetVersion?: number;
+}
+
+/**
+ * Guarded path: the whole eligibility predicate is enforced by ONE
+ * database operation (public.approve_asset_if_current,
+ * 0013_approve_asset_if_current.sql), which serializes against concurrent
+ * asset inserts for the same draft via a draft-row lock. No application-
+ * side "is it the newest?" check decides anything here; the asset is
+ * re-read only to build the result/explanation.
+ */
+async function approveAssetVersionGuarded(
+  db: SupabaseClient<Database>,
+  asset: ContentAssetRow,
+  expectedAssetVersion: number
+): Promise<ApproveAssetOutcome> {
+  if (!Number.isInteger(expectedAssetVersion) || expectedAssetVersion < 1) {
+    return { ok: false, message: "Invalid expected asset version." };
+  }
+
+  const { data: approvedId, error } = await db.rpc("approve_asset_if_current", {
+    p_asset_id: asset.id,
+    p_draft_id: asset.draft_id,
+    p_expected_asset_version: expectedAssetVersion,
+  });
+  if (error) return { ok: false, message: error.message };
+
+  const { data: current } = await db.from("content_assets").select("*").eq("id", asset.id).maybeSingle();
+  if (approvedId) return { ok: true, asset: current ?? undefined };
+
+  if (!current) return { ok: false, message: "Asset not found." };
+  if (current.asset_version !== expectedAssetVersion) {
+    return { ok: false, staleVersion: true, message: `Asset is version ${current.asset_version}, not ${expectedAssetVersion}.` };
+  }
+  const latest = await getLatestAsset(db, current.draft_id);
+  if (latest && latest.id !== current.id) {
+    return { ok: false, staleVersion: true, message: `Asset version ${current.asset_version} has been superseded by version ${latest.asset_version}.` };
+  }
+  return { ok: false, message: `Asset is in status "${current.status}" and cannot be approved right now.` };
+}
+
+export async function approveAsset(
+  db: SupabaseClient<Database>,
+  assetId: string,
+  options: ApproveAssetOptions = {}
+): Promise<ApproveAssetOutcome> {
   const { data: asset, error } = await db.from("content_assets").select("*").eq("id", assetId).single();
   if (error || !asset) {
     return { ok: false, message: "Asset not found." };
+  }
+  if (options.expectedAssetVersion !== undefined) {
+    return approveAssetVersionGuarded(db, asset, options.expectedAssetVersion);
   }
   if (asset.status !== "pending_review") {
     return { ok: false, message: `Asset is in status "${asset.status}" and cannot be approved right now.` };

@@ -3,9 +3,10 @@ import type { ContentAssetRow, ContentDraftRow, ContentRevisionRow } from "@/lib
 import { renderContentReviewEmail, renderAssetReviewEmail, loadAssetInlineImage, escapeHtml } from "@/lib/agent/emailTemplates";
 import { FakeAssetStorage } from "@/tests/support/fakeAssetStorage";
 
-// Review email rendering (Email HITL Phase 2A): pure, provider-neutral,
-// HTML-escaped, with a plain-text alternative, and NO functional
-// approve/reject links or AlexAgent URLs of any kind yet.
+// Review email rendering (Email HITL Phase 2A/2B): pure, provider-neutral,
+// HTML-escaped, with a plain-text alternative. Without supplied action
+// URLs there are NO functional links or AlexAgent URLs of any kind; with
+// them (Phase 2B), only the supplied action buttons appear.
 
 function draft(overrides: Partial<ContentDraftRow> = {}): ContentDraftRow {
   return {
@@ -258,5 +259,66 @@ describe("loadAssetInlineImage", () => {
     expect(await loadAssetInlineImage(storage, asset({ status: "generation_failed" }))).toBeNull();
     expect(await loadAssetInlineImage(storage, asset({ storage_path: null }))).toBeNull();
     expect(await loadAssetInlineImage(storage, asset())).toBeNull();
+  });
+});
+
+describe("functional review actions (Phase 2B)", () => {
+  const APPROVE = "https://agent.alexsosa.me/email/action#t=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const REJECT = "https://agent.alexsosa.me/email/action#t=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const APPROVE_ASSET = "https://agent.alexsosa.me/email/action#t=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+
+  it("renders Aprobar/Rechazar buttons and spells the same URLs out in text/plain", () => {
+    const email = renderContentReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), actions: { approveUrl: APPROVE, rejectUrl: REJECT } });
+    expect(email.html).toContain(`<a href="${APPROVE}"`);
+    expect(email.html).toContain(`<a href="${REJECT}"`);
+    expect(email.html).toMatch(/>Aprobar<\/a>/);
+    expect(email.html).toMatch(/>Rechazar<\/a>/);
+    expect(email.text).toContain(`Aprobar: ${APPROVE}`);
+    expect(email.text).toContain(`Rechazar: ${REJECT}`);
+    expect(email.text).not.toContain("estará disponible próximamente. Por ahora este correo es solo informativo");
+    // Only the two action anchors exist — the CTA destination is still plain text.
+    expect(email.html.match(/<a\s/g)).toHaveLength(2);
+    expect(email.html).not.toContain('href="https://solardesk.co');
+  });
+
+  it("never renders Request Changes as a button, and never shows raw ids in labels/copy", () => {
+    const email = renderContentReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), actions: { approveUrl: APPROVE, rejectUrl: REJECT } });
+    expect(email.html).not.toMatch(/>\s*(Pedir|Solicitar) cambios\s*<\/a>/i);
+    expect(email.text).toContain("Pedir cambios respondiendo a este correo estará disponible próximamente.");
+    expect(email.html).not.toContain(draft().id);
+    expect(email.text).not.toContain(draft().id);
+  });
+
+  it("escapes action URLs placed in href attributes", () => {
+    const email = renderContentReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), actions: { approveUrl: 'https://x.test/"><script>', rejectUrl: REJECT } });
+    expect(email.html).not.toContain('"><script>');
+    expect(email.html).toContain("&quot;&gt;&lt;script&gt;");
+  });
+
+  it("renders Aprobar imagen for asset review while keeping the inline CID image", () => {
+    const image = { contentId: "solardesk-asset-v3", filename: "solardesk-asset-v3.png", contentType: "image/png", content: PNG };
+    const email = renderAssetReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), asset: asset(), image, approveAssetUrl: APPROVE_ASSET });
+    expect(email.html).toContain(`<a href="${APPROVE_ASSET}"`);
+    expect(email.html).toMatch(/>Aprobar imagen<\/a>/);
+    expect(email.text).toContain(`Aprobar imagen: ${APPROVE_ASSET}`);
+    expect(email.html).toContain('src="cid:solardesk-asset-v3"');
+    expect(email.inlineAttachments).toEqual([image]);
+    expect(email.html).not.toMatch(/>Rechazar/);
+  });
+
+  it("renders no action URL at all when none is supplied", () => {
+    const content = renderContentReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), actions: null });
+    const assetEmail = renderAssetReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), asset: asset(), image: null, approveAssetUrl: null });
+    for (const e of [content, assetEmail]) {
+      expect(e.html).not.toMatch(/<a[\s>]/);
+      expect(e.text).not.toContain("/email/action");
+    }
+  });
+
+  it("the security note's stated expiry matches the real token TTL", async () => {
+    const { DEFAULT_ACTION_TOKEN_TTL_MS } = await import("@/lib/agent/emailActions");
+    const email = renderContentReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), actions: { approveUrl: APPROVE, rejectUrl: REJECT } });
+    const days = DEFAULT_ACTION_TOKEN_TTL_MS / (24 * 60 * 60 * 1000);
+    expect(email.text).toContain(`vencen en ${days} días`);
   });
 });

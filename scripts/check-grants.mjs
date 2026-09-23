@@ -75,6 +75,29 @@ async function main() {
     console.log("OK: ALTER DEFAULT PRIVILEGES covers a table created after this migration");
   }
 
+  // approve_asset_if_current (0013) must be executable by service_role
+  // only — never PUBLIC (which any other role, incl. anon/authenticated,
+  // would inherit).
+  await db.exec("create role probe_role;");
+  const fnSig = "public.approve_asset_if_current(uuid, uuid, integer)";
+  const fnPrivs = await db.query(
+    `select has_function_privilege('service_role', $1, 'execute') as service_role_can,
+            has_function_privilege('probe_role', $1, 'execute') as other_role_can;`,
+    [fnSig]
+  );
+  if (fnPrivs.rows[0].service_role_can !== true) {
+    ok = false;
+    console.error("MISSING: service_role EXECUTE on approve_asset_if_current");
+  } else {
+    console.log("OK: service_role can EXECUTE approve_asset_if_current");
+  }
+  if (fnPrivs.rows[0].other_role_can !== false) {
+    ok = false;
+    console.error("UNEXPECTED: a non-service role can EXECUTE approve_asset_if_current (PUBLIC not revoked)");
+  } else {
+    console.log("OK: other roles (PUBLIC) cannot EXECUTE approve_asset_if_current");
+  }
+
   await db.close();
   if (!ok) {
     console.error("\nGrant check FAILED.");

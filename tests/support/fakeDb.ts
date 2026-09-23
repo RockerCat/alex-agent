@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 type Row = Record<string, unknown>;
-type Filter = { col: string; op: "eq" | "neq" | "gte" | "lt" | "in"; val: unknown };
+type Filter = { col: string; op: "eq" | "neq" | "gte" | "lt" | "in" | "is"; val: unknown };
 
 function nowIso() {
   return new Date().toISOString();
@@ -21,6 +21,7 @@ function matchesFilters(row: Row, filters: Filter[]): boolean {
     if (f.op === "gte") return (v as string) >= (f.val as string);
     if (f.op === "lt") return (v as string) < (f.val as string);
     if (f.op === "in") return Array.isArray(f.val) && f.val.includes(v);
+    if (f.op === "is") return f.val === null ? v === null || v === undefined : v === f.val;
     return true;
   });
 }
@@ -53,6 +54,10 @@ function checkUniqueConstraints(table: string, candidate: Row, existing: Row[]):
         r.subject_version === candidate.subject_version
     );
     if (clash) return `duplicate key value violates unique constraint "notification_outbox_brand_channel_notification_type_subjec"`;
+  }
+  if (table === "email_action_tokens") {
+    const clash = existing.some((r) => r.token_hash === candidate.token_hash);
+    if (clash) return `duplicate key value violates unique constraint "email_action_tokens_token_hash_key"`;
   }
   if (table === "whatsapp_inbound_events") {
     const clash = existing.some((r) => r.provider_message_id === candidate.provider_message_id);
@@ -104,6 +109,8 @@ function defaultsForTable(table: string): Row {
         provider_error_detail: null,
         rfc_message_id: null,
       };
+    case "email_action_tokens":
+      return { consumed_at: null, outcome: null, updated_at: nowIso() };
     case "whatsapp_inbound_events":
       return {
         command: null,
@@ -154,6 +161,11 @@ class FakeQueryBuilder<T = unknown> implements PromiseLike<PgResult<T>> {
 
   neq(col: string, val: unknown) {
     this.filters.push({ col, op: "neq", val });
+    return this;
+  }
+
+  is(col: string, val: null | boolean) {
+    this.filters.push({ col, op: "is", val });
     return this;
   }
 
@@ -276,6 +288,39 @@ export class FakeDb {
 
   seed(table: string, rows: Row[]) {
     this.store.set(table, rows.map((r) => ({ ...r })));
+  }
+
+  /** Every rpc() call, in order — lets tests prove a guarded path is one atomic DB operation. */
+  rpcCalls: { name: string; args: Record<string, unknown> }[] = [];
+  /** One-shot hook run immediately before the next rpc() executes (e.g. to simulate a concurrent insert). */
+  beforeNextRpc: (() => void) | null = null;
+
+  /**
+   * In-memory stand-in for the SQL functions this app calls. Each runs
+   * synchronously over the store, so it is atomic here the same way the
+   * real function is atomic in Postgres (draft-row lock + one UPDATE).
+   */
+  async rpc(name: string, args: Record<string, unknown>): Promise<PgResult<unknown>> {
+    this.rpcCalls.push({ name, args });
+    const hook = this.beforeNextRpc;
+    this.beforeNextRpc = null;
+    hook?.();
+
+    if (name === "approve_asset_if_current") {
+      // Mirrors supabase/migrations/0013_approve_asset_if_current.sql.
+      const drafts = this.store.get("content_drafts") ?? [];
+      if (!drafts.some((d) => d.id === args.p_draft_id)) return { data: null, error: null };
+      const assets = this.store.get("content_assets") ?? [];
+      const expected = args.p_expected_asset_version as number;
+      const target = assets.find(
+        (a) => a.id === args.p_asset_id && a.draft_id === args.p_draft_id && a.asset_version === expected && a.status === "pending_review"
+      );
+      const newerExists = assets.some((a) => a.draft_id === args.p_draft_id && (a.asset_version as number) > expected);
+      if (!target || newerExists) return { data: null, error: null };
+      Object.assign(target, { status: "ready_to_publish", approved_at: nowIso() });
+      return { data: target.id, error: null };
+    }
+    return { data: null, error: { message: `Unknown function: ${name}` } };
   }
 
   getAll(table: string): Row[] {

@@ -14,7 +14,13 @@ import { createServerClient } from "@supabase/ssr";
 // sharing a text prefix with "/data-deletion". This does not change
 // matching for any currently existing route: none of today's real
 // routes share a prefix stem with an entry here without a "/" boundary.
-const PUBLIC_PATHS = ["/login", "/auth/callback", "/privacy", "/data-deletion"];
+//
+// /email/action is the Email HITL confirmation page (app/email/action/page.tsx):
+// Alex opens it from a review email without an AlexAgent session. It is
+// safe as a plain public page because it never sees the one-time token
+// server-side (it lives in the URL fragment) and cannot decide anything
+// by being loaded.
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/privacy", "/data-deletion", "/email/action"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
@@ -34,7 +40,12 @@ function isPublicPath(pathname: string): boolean {
 // reach that check instead of being redirected to /login before it
 // gets there. Deliberately the exact route, not a broader "/api/webhooks/"
 // prefix, so no future unrelated webhook route is exempted by accident.
-const API_AUTH_EXEMPT_PREFIXES = ["/api/cron/", "/api/webhooks/whatsapp"];
+//
+// /api/email-actions/inspect and /api/email-actions/confirm (Email HITL)
+// authorize each request by the high-entropy, expiring, single-use token
+// in the POST body (lib/agent/emailActions.ts) — exact routes only, no
+// broader "/api/email-actions/" prefix.
+const API_AUTH_EXEMPT_PREFIXES = ["/api/cron/", "/api/webhooks/whatsapp", "/api/email-actions/inspect", "/api/email-actions/confirm"];
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request });

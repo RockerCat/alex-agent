@@ -269,6 +269,45 @@ async function main() {
   if (!uncorrelatedAppliedBlocked) throw new Error("Expected CHECK constraint to block an 'applied' inbound event without a reply token");
   console.log("OK: email_inbound_events rejects 'applied' without a correlated reply token");
 
+  // approve_asset_if_current (0013): the atomic exact-version asset
+  // approval predicate — exact asset, expected draft, expected version,
+  // still pending_review, and no newer asset row for the draft.
+  const draft2 = await db.query(
+    `insert into content_drafts (
+       plan_id, brand, channel, content_type, purpose, topic, audience, cta, target_date, status, version
+     ) values ($1, 'solardesk', 'instagram', 'image_post', 'p', 't', 'a', 'c', '2026-09-10', 'approved', 1)
+     returning id;`,
+    [plan.rows[0].id]
+  );
+  const draft2Id = draft2.rows[0].id;
+  const insertAsset = async (version) =>
+    (
+      await db.query(
+        `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status)
+         values ($1, 'solardesk', $2, 1, 'pending_review') returning id;`,
+        [draft2Id, version]
+      )
+    ).rows[0].id;
+  const assetV1 = await insertAsset(1);
+  const approve = async (assetIdArg, draftIdArg, version) =>
+    (await db.query(`select public.approve_asset_if_current($1, $2, $3) as approved;`, [assetIdArg, draftIdArg, version])).rows[0].approved;
+
+  const expectApproval = async (label, got, expected) => {
+    if (got !== expected) throw new Error(`approve_asset_if_current: ${label} — expected ${expected}, got ${got}`);
+    console.log(`OK: approve_asset_if_current ${label}`);
+  };
+  const assetV2 = await insertAsset(2);
+  await expectApproval("refuses an older asset once a newer one exists", await approve(assetV1, draft2Id, 1), null);
+  await expectApproval("refuses a version mismatch", await approve(assetV2, draft2Id, 1), null);
+  await expectApproval("refuses the wrong draft", await approve(assetV2, draftId, 2), null);
+  await expectApproval("approves the exact current pending asset", await approve(assetV2, draft2Id, 2), assetV2);
+  await expectApproval("refuses a replay (no longer pending_review)", await approve(assetV2, draft2Id, 2), null);
+  const statuses = await db.query(`select asset_version, status from content_assets where draft_id = $1 order by asset_version;`, [draft2Id]);
+  if (statuses.rows[0].status !== "pending_review" || statuses.rows[1].status !== "ready_to_publish") {
+    throw new Error(`approve_asset_if_current: unexpected final statuses ${JSON.stringify(statuses.rows)}`);
+  }
+  console.log("OK: approve_asset_if_current mutated only the exact current asset");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

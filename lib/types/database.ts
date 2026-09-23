@@ -335,6 +335,12 @@ export type Database = {
       email_inbound_events: TableDef<EmailInboundEventRow>;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      // 0013_approve_asset_if_current.sql — atomic exact-version asset approval.
+      approve_asset_if_current: {
+        Args: { p_asset_id: string; p_draft_id: string; p_expected_asset_version: number };
+        Returns: string | null;
+      };
+    };
   };
 }

@@ -126,4 +126,41 @@ describe("proxy — session-auth routing", () => {
     const response = await proxy(makeRequest("/api/webhooks/whatsapp"));
     expect(response.status).not.toBe(307);
   });
+
+  it("15. the email action confirmation page (/email/action) is public — no /login redirect", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/email/action"));
+    expect(response.status).not.toBe(307);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("16. the email action inspect/confirm endpoints are exempt and never touch Supabase auth", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    for (const path of ["/api/email-actions/inspect", "/api/email-actions/confirm"]) {
+      const response = await proxy(makeRequest(path));
+      expect(response.status).not.toBe(307);
+    }
+    expect(getUserMock).not.toHaveBeenCalled();
+  });
+
+  it("17. an unrelated /api/email-actions/* path is NOT exempted — no broad prefix bypass", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/api/email-actions/list"));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/login");
+  });
+
+  it("18. a similarly-named route (/email/actions-admin) is NOT made public by /email/action", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    const response = await proxy(makeRequest("/email/actions-admin"));
+    expect(response.status).toBe(307);
+  });
+
+  it("19. protected routes remain protected after adding the email action exemptions", async () => {
+    getUserMock.mockResolvedValue({ data: { user: null } });
+    for (const path of ["/dashboard", "/approvals", "/settings"]) {
+      const response = await proxy(makeRequest(path));
+      expect(response.status).toBe(307);
+    }
+  });
 });

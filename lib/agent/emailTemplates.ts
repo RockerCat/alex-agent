@@ -12,11 +12,13 @@ import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
 // reaches the HTML body; the plain-text alternative carries the same
 // information.
 //
-// Deliberately NOT functional yet: there are no approve/reject links, no
-// action tokens, and no AlexAgent URLs anywhere in these emails. The
-// "decision" section is a clearly non-functional placeholder, and the
-// only URL that can appear is the draft's own CTA destination, rendered
-// as plain text (never an <a href>).
+// Decision actions are functional ONLY when the caller supplies action
+// URLs (built by application code from opaque one-time tokens — see
+// lib/agent/emailActions.ts; never model-generated). Without them the
+// decision section is a clearly non-functional placeholder. Apart from
+// those action buttons, the only URL that can appear is the draft's own
+// CTA destination, rendered as plain text (never an <a href>). "Request
+// changes" is never rendered as a button — it arrives with inbound replies.
 //
 // Asset images are embedded inline via CID (bytes read through
 // AssetStorage.download()), so the private bucket stays private and no
@@ -39,6 +41,8 @@ export interface ContentReviewEmailInput {
   planObjective?: string | null;
   /** The content_revisions row for draft.version, when it carries feedback (i.e. this version answers a "Request Changes"). */
   latestRevision?: ContentRevisionRow | null;
+  /** Secure, version-bound action URLs; omitted/null renders the non-functional placeholder. */
+  actions?: { approveUrl: string; rejectUrl: string } | null;
 }
 
 export interface AssetReviewEmailInput {
@@ -48,6 +52,8 @@ export interface AssetReviewEmailInput {
   planObjective?: string | null;
   /** From loadAssetInlineImage(); null renders a "no image available" notice instead of an image. */
   image: EmailInlineAttachment | null;
+  /** Secure, version-bound asset approval URL; omitted/null renders the non-functional placeholder. */
+  approveAssetUrl?: string | null;
 }
 
 const MAX_SUBJECT_LENGTH = 150;
@@ -79,6 +85,11 @@ const FEEDBACK_CATEGORY_LABELS: Record<NonNullable<ContentRevisionRow["feedback_
 
 const PENDING_ACTIONS_NOTICE =
   "Aprobar, rechazar o pedir cambios desde este correo estará disponible próximamente. Por ahora este correo es solo informativo.";
+
+const ACTION_SECURITY_NOTE =
+  "Cada botón abre una página de confirmación: nada se aplica hasta que confirmes. Los enlaces son de un solo uso, vencen en 7 días y solo aplican a esta versión exacta. No reenvíes este correo: quien tenga los enlaces puede tomar la decisión.";
+
+const REQUEST_CHANGES_PENDING_NOTE = "Pedir cambios respondiendo a este correo estará disponible próximamente.";
 
 export function escapeHtml(value: string): string {
   return value
@@ -197,6 +208,29 @@ function pendingActionsSection(): Section {
   };
 }
 
+interface ActionButton {
+  label: string;
+  url: string;
+  background: string;
+}
+
+/** Functional decision buttons (HTML) with the same URLs spelled out for the plain-text alternative. */
+function actionsSection(buttons: ActionButton[], extraNote: string | null): Section {
+  const buttonsHtml = buttons
+    .map(
+      (b) =>
+        `<a href="${escapeHtml(b.url)}" style="display:inline-block;margin:0 8px 8px 0;padding:10px 18px;border-radius:6px;background:${b.background};color:#ffffff;font-size:14px;font-weight:600;text-decoration:none">${escapeHtml(b.label)}</a>`
+    )
+    .join("");
+  const notes = [ACTION_SECURITY_NOTE, extraNote].filter((n): n is string => Boolean(n));
+  return {
+    html: `<div style="margin:28px 0 8px;padding:12px;border:1px solid #ddd;border-radius:6px"><h2 style="font-size:16px;margin:0 0 12px">Decisión</h2><div>${buttonsHtml}</div>${notes
+      .map((n) => `<p style="font-size:12px;color:#666;margin:8px 0 0">${escapeHtml(n)}</p>`)
+      .join("")}</div>`,
+    text: `-- Decisión --\n${buttons.map((b) => `${b.label}: ${b.url}`).join("\n")}\n\n${notes.join("\n")}`,
+  };
+}
+
 function contextSection(input: { brandDisplayName: string; draft: ContentDraftRow; planObjective?: string | null }, extra: (Section | null)[] = []): Section {
   const { brandDisplayName, draft, planObjective } = input;
   return fieldTable("Contexto", [
@@ -251,7 +285,15 @@ export function renderContentReviewEmail(input: ContentReviewEmailInput): Render
     hashtagsSection(draft),
     ctaSection(draft),
     block("Dirección visual", draft.visual_direction),
-    pendingActionsSection(),
+    input.actions
+      ? actionsSection(
+          [
+            { label: "Aprobar", url: input.actions.approveUrl, background: "#15803d" },
+            { label: "Rechazar", url: input.actions.rejectUrl, background: "#b91c1c" },
+          ],
+          REQUEST_CHANGES_PENDING_NOTE
+        )
+      : pendingActionsSection(),
   ]);
 
   return {
@@ -322,7 +364,9 @@ export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEm
     block("Caption", draft.caption),
     hashtagsSection(draft),
     ctaSection(draft),
-    pendingActionsSection(),
+    input.approveAssetUrl
+      ? actionsSection([{ label: "Aprobar imagen", url: input.approveAssetUrl, background: "#15803d" }], REQUEST_CHANGES_PENDING_NOTE)
+      : pendingActionsSection(),
   ]);
 
   const includeImage = draft.content_type !== "carousel" && input.image !== null;
