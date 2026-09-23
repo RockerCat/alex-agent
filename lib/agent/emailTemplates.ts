@@ -2,6 +2,7 @@ import type { ContentAssetRow, ContentDraftRow, ContentRevisionRow } from "@/lib
 import type { EmailInlineAttachment } from "@/lib/agent/emailClient";
 import type { AssetStorage } from "@/lib/agent/assetStorage";
 import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
+import { composeFinalSocialCaption } from "@/lib/agent/finalCaption";
 
 // Provider-neutral review email rendering (Email HITL, Phase 2A).
 //
@@ -304,7 +305,8 @@ export function renderContentReviewEmail(input: ContentReviewEmailInput): Render
 }
 
 // ---------------------------------------------------------------------
-// Asset review email (stage 2: generated image pending review)
+// Finished-publication review email (stage 2: the exact image + exact
+// final caption for the draft's single destination channel, pending review)
 // ---------------------------------------------------------------------
 
 function assetImageSection(input: AssetReviewEmailInput): Section {
@@ -333,10 +335,49 @@ function assetImageSection(input: AssetReviewEmailInput): Section {
   };
 }
 
+/** Prominent, unambiguous statement of the ONE channel this approval covers (draft.channel). */
+function destinationSection(draft: ContentDraftRow): Section {
+  const channel = CHANNEL_LABELS[draft.channel] ?? draft.channel;
+  const note = `Esta aprobación autoriza solo ${channel}. No autoriza publicar en ningún otro canal.`;
+  return {
+    html: `<div style="margin:12px 0;padding:10px 12px;border-radius:6px;background:#f1f5f9;font-size:14px"><strong>Destino: ${escapeHtml(channel)}</strong><br><span style="color:#555;font-size:13px">${escapeHtml(note)}</span></div>`,
+    text: `Destino: ${channel}\n${note}`,
+  };
+}
+
+/** The exact caption the publisher will send — composed by the same canonical function the publishers use. */
+function finalCaptionSection(draft: ContentDraftRow): Section {
+  const channel = CHANNEL_LABELS[draft.channel] ?? draft.channel;
+  const finalCaption = composeFinalSocialCaption(draft);
+  if (!finalCaption) {
+    return {
+      html: `<h2 style="font-size:16px;margin:24px 0 8px">Texto final que se publicará</h2><p style="font-size:14px;color:#a33">Este borrador no tiene texto publicable (sin caption ni hook).</p>`,
+      text: "== Texto final que se publicará ==\nEste borrador no tiene texto publicable (sin caption ni hook).",
+    };
+  }
+  const note = `Este es exactamente el texto que se enviará a ${channel}, incluidos el enlace y los hashtags.`;
+  return {
+    html: `<h2 style="font-size:16px;margin:24px 0 8px">Texto final que se publicará</h2><div style="font-size:14px;white-space:pre-wrap;padding:12px;border:1px solid #ddd;border-radius:6px;background:#fafafa">${escapeHtml(
+      finalCaption
+    )}</div><p style="font-size:12px;color:#666;margin:6px 0 0">${escapeHtml(note)}</p>`,
+    text: `== Texto final que se publicará ==\n${finalCaption}\n\n(${note})`,
+  };
+}
+
+/** What the image renderer draws onto the image itself (assetRenderer.ts: draft.hook + CTA label). */
+function textInImageSection(draft: ContentDraftRow): Section | null {
+  if (draft.content_type === "carousel") return null;
+  const { label } = resolveCtaLabelAndUrl(draft);
+  const rows = [field("Titular", draft.hook), field("Botón (CTA)", nonEmpty(label) ? label : null)];
+  if (rows.every((r) => r === null)) return null;
+  return fieldTable("Texto dentro de la imagen", rows);
+}
+
 export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEmailWithAttachments {
   const { brandDisplayName, draft, asset } = input;
-  const title = `Revisión de imagen v${asset.asset_version} — ${brandDisplayName}`;
-  const intro = `AlexAgent generó la imagen para el contenido aprobado (v${draft.version}). Está pendiente de tu revisión.`;
+  const channel = CHANNEL_LABELS[draft.channel] ?? draft.channel;
+  const title = `Pieza lista para publicar — ${brandDisplayName}`;
+  const intro = `AlexAgent preparó la pieza final para ${channel}: esta imagen y este texto exactos (contenido v${draft.version}, imagen v${asset.asset_version}). Si estás de acuerdo, aprueba la publicación.`;
 
   const assetFields: (Section | null)[] = [
     field("Versión de la imagen", `v${asset.asset_version}`),
@@ -350,28 +391,26 @@ export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEm
         }
       : null;
 
+  const publicationNote = `"Aprobar publicación" autoriza únicamente ${channel}, con esta imagen y este texto exactos. En esta etapa AlexAgent no publica automáticamente: la pieza quedará lista para publicar.`;
+
   const { html, text } = wrapDocument(title, intro, [
+    destinationSection(draft),
     assetImageSection(input),
     versionMismatch,
+    finalCaptionSection(draft),
+    textInImageSection(draft),
+    draft.content_type === "carousel" ? slidesSection(draft) : null,
     contextSection(input, assetFields),
-    {
-      html: `<h2 style="font-size:16px;margin:24px 0 8px">Texto que acompañará la publicación</h2>`,
-      text: "== Texto que acompañará la publicación ==",
-    },
-    block("Título", draft.title),
-    block("Hook", draft.hook),
-    slidesSection(draft),
-    block("Caption", draft.caption),
-    hashtagsSection(draft),
-    ctaSection(draft),
     input.approveAssetUrl
-      ? actionsSection([{ label: "Aprobar imagen", url: input.approveAssetUrl, background: "#15803d" }], REQUEST_CHANGES_PENDING_NOTE)
+      ? actionsSection([{ label: "Aprobar publicación", url: input.approveAssetUrl, background: "#15803d" }], `${publicationNote} ${REQUEST_CHANGES_PENDING_NOTE}`)
       : pendingActionsSection(),
   ]);
 
   const includeImage = draft.content_type !== "carousel" && input.image !== null;
   return {
-    subject: sanitizeSubject(`[${brandDisplayName}] Revisión de imagen v${asset.asset_version} (contenido v${draft.version}): ${displayTitle(draft)}`),
+    subject: sanitizeSubject(
+      `[${brandDisplayName}] Pieza lista para publicar en ${channel}: ${displayTitle(draft)} (contenido v${draft.version}, imagen v${asset.asset_version})`
+    ),
     html,
     text,
     inlineAttachments: includeImage && input.image ? [input.image] : [],

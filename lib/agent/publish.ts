@@ -4,7 +4,7 @@ import type { AssetStorage } from "@/lib/agent/assetStorage";
 import { FacebookPublishError, facebookPublishingCapabilityAvailable, type FacebookPageClient } from "@/lib/agent/facebookClient";
 import { InstagramPublishError, instagramPublishingCapabilityAvailable, type InstagramGraphClient } from "@/lib/agent/instagramClient";
 import { isUniqueViolation } from "@/lib/agent/runLock";
-import { resolveCtaLabelAndUrl } from "@/lib/agent/cta";
+import { baseSocialCaption, checkFinalSocialCaption, composeFinalSocialCaption } from "@/lib/agent/finalCaption";
 
 // AlexAgent v0.2 — Facebook manual publishing (checkpoint 1), extended
 // (checkpoint: Instagram publication service) with
@@ -34,18 +34,11 @@ function channelLabel(channel: PublicationChannel): string {
   return channel === "facebook" ? "Facebook" : "Instagram";
 }
 
-/**
- * Deterministic append-if-missing caption composition shared by
- * Facebook and Instagram publishing (see cta.ts): appends the resolved
- * CTA destination exactly once when the approved draft has one and the
- * human-written caption doesn't already contain it verbatim. Never
- * invents copy, never sends cta_text itself as a caption substitute,
- * never duplicates the URL if it's already present.
- */
-function composeCaptionWithCtaDestination(baseCaption: string, draft: { cta_text: string | null; cta_url: string | null }): string {
-  const { url: ctaDestination } = resolveCtaLabelAndUrl(draft);
-  return ctaDestination && !baseCaption.includes(ctaDestination) ? `${baseCaption}\n\n${ctaDestination}` : baseCaption;
-}
+// Both publishers send exactly composeFinalSocialCaption(draft) — the
+// same canonical composer the finished-publication review email shows
+// (see lib/agent/finalCaption.ts), so what Alex approves is what Meta
+// receives: caption (or hook fallback), CTA destination appended once if
+// missing, then the draft's hashtags without duplicates.
 
 export interface PublishAssetOutcome {
   status: "success" | "ineligible" | "failed" | "concurrent";
@@ -198,17 +191,14 @@ export async function publishAssetToFacebook(params: {
   if (!asset.storage_path) {
     return { status: "ineligible", message: "Asset has no stored image file to publish." };
   }
-  const baseCaption = (draft.caption ?? draft.hook ?? "").trim();
-  if (!baseCaption) {
+  if (!baseSocialCaption(draft)) {
     return { status: "ineligible", message: "Draft has no approved caption or hook to publish." };
   }
 
-  // Ensure the CTA destination reaches the actual published text (real
-  // production gap, 2026-09-17): this endpoint never sends cta/cta_text
-  // or a separate link field to Meta (see facebookClient.ts) — the
-  // caption is the only text Facebook ever receives. composeCaptionWithCtaDestination
-  // appends the destination deterministically (see its doc comment).
-  const caption = composeCaptionWithCtaDestination(baseCaption, draft);
+  // The caption is the only text Facebook ever receives (this endpoint
+  // never sends cta/cta_text or a separate link field — see
+  // facebookClient.ts), so the CTA destination and hashtags must be in it.
+  const caption = composeFinalSocialCaption(draft);
 
   const claim = await claimPublicationSlot(db, { assetId: asset.id, draftId: draft.id, brand: draft.brand, channel: "facebook" });
   if (!claim.ok) {
@@ -372,12 +362,17 @@ export async function publishAssetToInstagram(params: {
   if (!asset.storage_path) {
     return { status: "ineligible", message: "Asset has no stored image file to publish." };
   }
-  const baseCaption = (draft.caption ?? draft.hook ?? "").trim();
-  if (!baseCaption) {
+  if (!baseSocialCaption(draft)) {
     return { status: "ineligible", message: "Draft has no approved caption or hook to publish." };
   }
 
-  const caption = composeCaptionWithCtaDestination(baseCaption, draft);
+  // Fail closed BEFORE claiming the slot or calling Meta when the exact
+  // composed caption exceeds Instagram's limit — never truncated.
+  const captionCheck = checkFinalSocialCaption(draft, "instagram");
+  if (!captionCheck.ok) {
+    return { status: "ineligible", message: captionCheck.reason };
+  }
+  const caption = captionCheck.caption;
 
   const claim = await claimPublicationSlot(db, { assetId: asset.id, draftId: draft.id, brand: draft.brand, channel: "instagram" });
   if (!claim.ok) {

@@ -296,8 +296,15 @@ describe("regeneration and failure handling", () => {
   });
 });
 
-describe("no automatic generation", () => {
-  it("14. approving a draft never calls generateAsset — no content_assets row appears without an explicit call", async () => {
+// Product rule (updated deliberately): the approveDraft() DOMAIN function
+// and the marketing-cycle runtime still never generate assets. The ONE
+// automatic path is the email lifecycle adapter
+// (lib/agent/postApprovalContinuation.ts): after an approve_draft EMAIL
+// action is applied, it continues an image_post to its FIRST asset via the
+// canonical generateAsset({ firstGenerationOnly: true }). Everything else
+// (Regenerate, dashboard-approved drafts) remains an explicit UI action.
+describe("asset generation triggers", () => {
+  it("14. the approveDraft() domain function itself never calls generateAsset — no content_assets row appears", async () => {
     const { fake, db } = setup();
     seedDraft(fake, "draft-1", { status: "pending_approval" });
 
@@ -325,6 +332,27 @@ describe("no automatic generation", () => {
     const approvalsSource = await readFile("lib/agent/approvals.ts", "utf-8");
     expect(runtimeSource).not.toMatch(/generateAsset|assetGenerator|assetRenderer/);
     expect(approvalsSource).not.toMatch(/generateAsset|assetGenerator|assetRenderer/);
+  });
+
+  it("15b. the only automatic caller of generateAsset is the email post-approval continuation, and it requests first generation only", async () => {
+    const { readFile, readdir } = await import("node:fs/promises");
+    const path = await import("node:path");
+    async function sourceFiles(dir: string): Promise<string[]> {
+      const entries = await readdir(dir, { withFileTypes: true });
+      const nested = await Promise.all(
+        entries.map((e) => (e.isDirectory() ? sourceFiles(path.join(dir, e.name)) : Promise.resolve(/\.(ts|tsx)$/.test(e.name) ? [path.join(dir, e.name)] : [])))
+      );
+      return nested.flat();
+    }
+    const callers: string[] = [];
+    for (const file of [...(await sourceFiles("lib")), ...(await sourceFiles("app"))]) {
+      if (file.endsWith(path.join("agent", "assetGenerator.ts"))) continue;
+      if (/\bgenerateAsset\(/.test(await readFile(file, "utf-8"))) callers.push(file.split(path.sep).join("/"));
+    }
+    // app/actions.ts = the explicit dashboard "Generate Asset"/"Regenerate" button.
+    expect(callers.sort()).toEqual(["app/actions.ts", "lib/agent/postApprovalContinuation.ts"]);
+    const continuation = await readFile("lib/agent/postApprovalContinuation.ts", "utf-8");
+    expect(continuation).toMatch(/generateAsset\(\{[^}]*firstGenerationOnly: true/);
   });
 });
 

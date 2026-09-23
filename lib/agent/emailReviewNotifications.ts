@@ -8,11 +8,15 @@ import { isUniqueViolation } from "@/lib/agent/runLock";
 import { getLatestAsset } from "@/lib/agent/assetGenerator";
 import { buildEmailActionUrl, createEmailActionTokens } from "@/lib/agent/emailActions";
 import { renderAssetReviewEmail, renderContentReviewEmail, loadAssetInlineImage, type RenderedEmail } from "@/lib/agent/emailTemplates";
+import { checkFinalSocialCaption } from "@/lib/agent/finalCaption";
 
 // AlexAgent — Email HITL Phase 2B: preparing an ACTIONABLE review email.
 //
-// Explicit, caller-driven only: nothing in the marketing cycle, cron, or
-// any workflow calls this yet. Order of operations is deliberate:
+// Content reviews are still prepared only by explicit callers. Asset
+// (finished-publication) reviews are also prepared automatically by
+// lib/agent/postApprovalContinuation.ts — post-response after an email
+// content approval, and by the cron catch-up sweep. Order of operations
+// is deliberate:
 //   1. claim the durable notification_outbox identity (channel 'email',
 //      keyed by brand + type + subject + version — the existing unique
 //      constraint is the duplicate-review-email guard);
@@ -21,16 +25,27 @@ import { renderAssetReviewEmail, renderContentReviewEmail, loadAssetInlineImage,
 //   3. render the email with action URLs built from the plaintext tokens.
 // deliverPreparedReviewEmail() then sends it and records the result on
 // the same outbox row. A 'sent' notification is never re-prepared; a
-// 'pending'/'failed' one may be reclaimed (fresh tokens, fresh
-// idempotency key) — same claim/reclaim shape as lib/agent/notifications.ts.
+// 'failed' one (or a 'pending' one left stale by a crashed attempt) may
+// be reclaimed (fresh tokens, fresh idempotency key) — same claim/reclaim
+// shape as lib/agent/notifications.ts, plus an in-flight guard.
 
 export type PrepareReviewOutcome<TEmail extends RenderedEmail = RenderedEmail> =
   | { status: "prepared"; notificationId: string; idempotencyKey: string; email: TEmail & { inlineAttachments?: EmailInlineAttachment[] } }
   | { status: "already_sent" }
   | { status: "concurrent" }
-  | { status: "not_eligible"; message: string };
+  /** finalCaptionInvalid: the exact composed caption can't be published on the draft's channel (see checkFinalSocialCaption). */
+  | { status: "not_eligible"; message: string; finalCaptionInvalid?: boolean };
 
 type ClaimResult = { ok: true; row: NotificationOutboxRow } | { ok: false; outcome: PrepareReviewOutcome };
+
+/**
+ * A 'pending' claim younger than this is treated as an in-flight attempt
+ * (another caller is preparing/sending right now) and is NOT reclaimed,
+ * so overlapping callers (post-approval continuation + cron catch-up)
+ * can never both send. Older 'pending' rows (a crashed attempt) and any
+ * 'failed' row are reclaimable. Same idea as runLock's stale-run recovery.
+ */
+const PENDING_CLAIM_STALE_MS = 10 * 60 * 1000;
 
 async function claimEmailNotification(
   db: SupabaseClient<Database>,
@@ -69,6 +84,9 @@ async function claimEmailNotification(
     .maybeSingle();
   if (!existing) return { ok: false, outcome: { status: "concurrent" } };
   if (existing.status === "sent") return { ok: false, outcome: { status: "already_sent" } };
+  if (existing.status === "pending" && params.now.getTime() - Date.parse(existing.updated_at) < PENDING_CLAIM_STALE_MS) {
+    return { ok: false, outcome: { status: "concurrent" } };
+  }
 
   const { data: reclaimed } = await db
     .from("notification_outbox")
@@ -182,6 +200,11 @@ export async function prepareAssetReviewNotification(
   }
   const { data: draft } = await db.from("content_drafts").select("*").eq("id", asset.draft_id).maybeSingle();
   if (!draft || draft.brand !== asset.brand) return { status: "not_eligible", message: "Asset's draft not found." };
+  // A finished-publication review must never present a caption the
+  // destination can't publish: checked BEFORE any outbox claim or token,
+  // so nothing durable is created and nothing misleading is sent.
+  const captionCheck = checkFinalSocialCaption(draft, draft.channel);
+  if (!captionCheck.ok) return { status: "not_eligible", message: captionCheck.reason, finalCaptionInvalid: true };
 
   const claim = await claimEmailNotification(db, {
     brand: asset.brand,

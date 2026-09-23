@@ -37,7 +37,7 @@ type Confirmation =
 const ACTION_LABELS: Record<ActionName, { question: string; button: string; done: string }> = {
   approve_draft: { question: "¿Aprobar este contenido?", button: "Confirmar aprobación", done: "Contenido aprobado." },
   reject_draft: { question: "¿Rechazar este contenido?", button: "Confirmar rechazo", done: "Contenido rechazado." },
-  approve_asset: { question: "¿Aprobar esta imagen?", button: "Confirmar aprobación de la imagen", done: "Imagen aprobada. Queda lista para publicar." },
+  approve_asset: { question: "¿Aprobar esta publicación?", button: "Confirmar aprobación de la publicación", done: "Publicación aprobada." },
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -77,7 +77,7 @@ function ContextSummary({ context }: { context: ActionContext }) {
       <dd>{context.brandDisplayName}</dd>
       <dt style={{ color: "var(--muted)" }}>Contenido</dt>
       <dd>{context.title}</dd>
-      <dt style={{ color: "var(--muted)" }}>Canal</dt>
+      <dt style={{ color: "var(--muted)" }}>Canal de destino</dt>
       <dd>{CHANNEL_LABELS[context.channel] ?? context.channel}</dd>
       <dt style={{ color: "var(--muted)" }}>Versión del contenido</dt>
       <dd>v{context.contentVersion}</dd>
@@ -102,6 +102,12 @@ function Message({ title, body, context }: { title: string; body?: string; conte
 }
 
 const ALREADY_PROCESSED_BODY = "Este enlace ya se usó. No se realizó ningún cambio nuevo.";
+
+/** What approving a finished publication means — shown before confirming and after success. */
+export function publicationApprovalScope(context: ActionContext): string {
+  const channel = CHANNEL_LABELS[context.channel] ?? context.channel;
+  return `Apruebas esta imagen y este texto exactos solo para ${channel}. AlexAgent todavía no publica automáticamente: la pieza quedará lista para publicar.`;
+}
 
 export function EmailActionConfirm() {
   // In memory only; never rendered, never re-sent anywhere but our own POST bodies.
@@ -143,7 +149,13 @@ export function EmailActionConfirm() {
   if (confirmation) {
     switch (confirmation.result) {
       case "applied":
-        return <Message title={ACTION_LABELS[confirmation.context.action].done} context={confirmation.context} />;
+        return (
+          <Message
+            title={ACTION_LABELS[confirmation.context.action].done}
+            body={confirmation.context.action === "approve_asset" ? publicationApprovalScope(confirmation.context) : undefined}
+            context={confirmation.context}
+          />
+        );
       case "stale":
         return <Message title="Esta versión ya no está vigente" body="El contenido cambió desde que se envió este correo. No se aplicó ningún cambio; revisa el correo más reciente." context={confirmation.context} />;
       case "not_actionable":
@@ -166,7 +178,11 @@ export function EmailActionConfirm() {
       const labels = ACTION_LABELS[inspection.context.action];
       return (
         <div className="space-y-4">
-          <Message title={labels.question} context={inspection.context} />
+          <Message
+            title={labels.question}
+            body={inspection.context.action === "approve_asset" ? publicationApprovalScope(inspection.context) : undefined}
+            context={inspection.context}
+          />
           <p className="text-xs" style={{ color: "var(--muted)" }}>
             Nada se aplica hasta que confirmes. Esta acción solo aplica a la versión indicada.
           </p>

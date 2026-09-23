@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ContentAssetRow, ContentDraftRow, ContentRevisionRow } from "@/lib/types/database";
 import { renderContentReviewEmail, renderAssetReviewEmail, loadAssetInlineImage, escapeHtml } from "@/lib/agent/emailTemplates";
+import { composeFinalSocialCaption } from "@/lib/agent/finalCaption";
 import { FakeAssetStorage } from "@/tests/support/fakeAssetStorage";
 
 // Review email rendering (Email HITL Phase 2A/2B): pure, provider-neutral,
@@ -199,17 +200,27 @@ describe("renderContentReviewEmail", () => {
 describe("renderAssetReviewEmail", () => {
   const image = { contentId: "solardesk-asset-v3", filename: "solardesk-asset-v3.png", contentType: "image/png", content: PNG };
 
-  it("embeds the image inline via CID and renders asset identity plus publication context", () => {
+  it("renders the finished post: inline CID image, exact destination, exact final caption, and both versions", () => {
     const email = renderAssetReviewEmail({ brandDisplayName: "SolarDesk", draft: draft({ status: "approved" }), asset: asset(), planObjective: "SIGNUPS", image });
 
-    expect(email.subject).toBe("[SolarDesk] Revisión de imagen v3 (contenido v2): De la cotización a la propuesta");
+    expect(email.subject).toBe("[SolarDesk] Pieza lista para publicar en Instagram: De la cotización a la propuesta (contenido v2, imagen v3)");
+    expect(email.text).toContain("Pieza lista para publicar");
     expect(email.html).toContain('src="cid:solardesk-asset-v3"');
     expect(email.html).toContain('width="540" height="675"');
     expect(email.inlineAttachments).toEqual([image]);
-    for (const value of ["v3", "v2", "SolarDesk te ayuda a cerrar más proyectos.", "#solar #energia", "Comenzar gratis", "https://solardesk.co/register"]) {
-      expect(email.html).toContain(escapeHtml(value));
-      expect(email.text).toContain(value);
-    }
+    // Exact destination, stated as the only authorized channel.
+    expect(email.text).toContain("Destino: Instagram");
+    expect(email.text).toContain("Esta aprobación autoriza solo Instagram.");
+    // The exact string the publisher will send (canonical composer), not separate fields.
+    const finalCaption = composeFinalSocialCaption(draft({ status: "approved" }));
+    expect(finalCaption).toBe("SolarDesk te ayuda a cerrar más proyectos.\n\nhttps://solardesk.co/register\n\n#solar #energia");
+    expect(email.text).toContain(`== Texto final que se publicará ==\n${finalCaption}\n`);
+    expect(email.html).toContain(escapeHtml(finalCaption));
+    // Text rendered inside the image, and both versions.
+    expect(email.text).toContain("Titular: ¿Cuántas horas pierdes armando propuestas?");
+    expect(email.text).toContain("Botón (CTA): Comenzar gratis");
+    expect(email.text).toContain("Versión del contenido: v2");
+    expect(email.text).toContain("Versión de la imagen: v3");
     expect(email.text).toContain("Imagen: adjunta en línea (solardesk-asset-v3.png)");
     expect(email.html).not.toMatch(/supabase|signed|storage\/v1/i);
   });
@@ -295,12 +306,15 @@ describe("functional review actions (Phase 2B)", () => {
     expect(email.html).toContain("&quot;&gt;&lt;script&gt;");
   });
 
-  it("renders Aprobar imagen for asset review while keeping the inline CID image", () => {
+  it("renders Aprobar publicación (single channel, no auto-publish) while keeping the inline CID image", () => {
     const image = { contentId: "solardesk-asset-v3", filename: "solardesk-asset-v3.png", contentType: "image/png", content: PNG };
     const email = renderAssetReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), asset: asset(), image, approveAssetUrl: APPROVE_ASSET });
     expect(email.html).toContain(`<a href="${APPROVE_ASSET}"`);
-    expect(email.html).toMatch(/>Aprobar imagen<\/a>/);
-    expect(email.text).toContain(`Aprobar imagen: ${APPROVE_ASSET}`);
+    expect(email.html).toMatch(/>Aprobar publicación<\/a>/);
+    expect(email.html).not.toMatch(/>Aprobar imagen<\/a>/);
+    expect(email.text).toContain(`Aprobar publicación: ${APPROVE_ASSET}`);
+    expect(email.text).toContain('"Aprobar publicación" autoriza únicamente Instagram, con esta imagen y este texto exactos.');
+    expect(email.text).toContain("AlexAgent no publica automáticamente");
     expect(email.html).toContain('src="cid:solardesk-asset-v3"');
     expect(email.inlineAttachments).toEqual([image]);
     expect(email.html).not.toMatch(/>Rechazar/);

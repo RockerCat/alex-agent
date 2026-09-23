@@ -112,7 +112,7 @@ describe("publishAssetToFacebook", () => {
 
     expect(outcome.status).toBe("success");
     expect(facebookClient.calls).toHaveLength(1);
-    expect(facebookClient.calls[0].message).toBe(draft.caption);
+    expect(facebookClient.calls[0].message).toBe(`${draft.caption}\n\n#energiasolar #solardesk`);
     expect(facebookClient.calls[0].imageBuffer.length).toBeGreaterThan(0);
   });
 
@@ -259,6 +259,30 @@ describe("publishAssetToFacebook", () => {
 // caption is the only text Facebook ever receives. When an approved
 // draft has a valid destination, it must reach the published message
 // text deterministically, without duplicating it or inventing copy.
+describe("publishAssetToFacebook — no caption length constraint (unchanged)", () => {
+  const originalEnv = { ...process.env };
+  beforeEach(() => {
+    process.env.META_FACEBOOK_PAGE_ACCESS_TOKEN = REAL_TOKEN;
+    process.env.META_FACEBOOK_PAGE_ID = "1225292840656707";
+  });
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("publishes a composed caption longer than Instagram's 2,200 limit, untruncated", async () => {
+    const { fake, db, storage } = setup();
+    const draft = seedDraft(fake, "draft-1", { caption: "a".repeat(2190) });
+    const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+    const facebookClient = new ScriptedFacebookClient({ postId: "fb-long" });
+
+    const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
+
+    expect(outcome.status).toBe("success");
+    expect(facebookClient.calls[0].message.length).toBeGreaterThan(2200);
+    expect(facebookClient.calls[0].message.startsWith("a".repeat(2190))).toBe(true);
+  });
+});
+
 describe("publishAssetToFacebook — CTA destination reaches the published caption", () => {
   const originalEnv = { ...process.env };
 
@@ -320,11 +344,11 @@ describe("publishAssetToFacebook — CTA destination reaches the published capti
 
     expect(outcome.status).toBe("success");
     const message = facebookClient.calls[0].message;
-    expect(message).toBe(draft.caption); // unchanged — already present
+    expect(message).toBe(`${draft.caption}\n\n#energiasolar #solardesk`); // destination not re-appended — only the hashtags line is added
     expect(message.split("https://solardesk.co/register")).toHaveLength(2); // still exactly once
   });
 
-  it("leaves the caption exactly as-is when the draft has no destination at all", async () => {
+  it("appends no destination when the draft has none (only its hashtags)", async () => {
     const { fake, db, storage } = setup();
     const draft = seedDraft(fake, "draft-1", {
       caption: "Contenido educativo sin llamado a un destino específico.",
@@ -337,7 +361,7 @@ describe("publishAssetToFacebook — CTA destination reaches the published capti
     const outcome = await publishAssetToFacebook({ db, storage, facebookClient, draftId: draft.id, assetId: asset.id });
 
     expect(outcome.status).toBe("success");
-    expect(facebookClient.calls[0].message).toBe(draft.caption);
+    expect(facebookClient.calls[0].message).toBe(`${draft.caption}\n\n#energiasolar #solardesk`);
   });
 
   it("never sends cta_text itself as a substitute for the caption", async () => {

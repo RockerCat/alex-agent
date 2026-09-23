@@ -106,6 +106,8 @@ export interface GenerateAssetOutcome {
   message?: string;
   /** True only when status === "failed" because the Budget Guard blocked a call. */
   budgetBlocked?: boolean;
+  /** True only when status === "ineligible" because firstGenerationOnly was requested and an asset already exists. */
+  assetAlreadyExists?: boolean;
 }
 
 export async function getLatestAsset(
@@ -666,6 +668,20 @@ async function generateFirstAssetWithDirector(params: {
   }
 
   try {
+    // Re-check under the brand lock: a concurrent first generation may
+    // have finished between generateAsset()'s pre-lock read and this
+    // lock. Without this, the loser would still pay for a Visual Director
+    // + image call before its "version 1" insert hit the unique
+    // constraint. No paid call is ever made once any asset exists.
+    const existingUnderLock = await listAssets(db, draft.id);
+    if (existingUnderLock.length > 0) {
+      await db
+        .from("agent_runs")
+        .update({ status: "skipped", summary: "First asset generation skipped: an asset already exists for this draft.", completed_at: new Date().toISOString() })
+        .eq("id", lockRun.id);
+      return { status: "concurrent", message: "An asset for this draft was generated concurrently." };
+    }
+
     const budgetGuard = new BudgetGuard(db);
     const outcome = await performFirstGeneration({ db, storage, draft, nextVersion, aiClient, imageGenerationClient, budgetGuard, agentRunId: lockRun.id });
 
@@ -729,6 +745,14 @@ export async function generateAsset(params: {
   draftId: string;
   aiClient?: AiClient;
   imageGenerationClient?: ImageGenerationClient;
+  /**
+   * When true, never takes the Regenerate path: if any asset already
+   * exists for the draft, returns ineligible + assetAlreadyExists instead
+   * of creating a new version. Used by automatic post-approval
+   * continuation (lib/agent/postApprovalContinuation.ts), which must only
+   * ever create a draft's FIRST asset. The dashboard omits it (unchanged).
+   */
+  firstGenerationOnly?: boolean;
 }): Promise<GenerateAssetOutcome> {
   const { db, storage, draftId, aiClient, imageGenerationClient } = params;
 
@@ -751,6 +775,10 @@ export async function generateAsset(params: {
 
   const existing = await listAssets(db, draftId);
   const nextVersion = (existing[0]?.asset_version ?? 0) + 1;
+
+  if (existing[0] && params.firstGenerationOnly) {
+    return { status: "ineligible", assetAlreadyExists: true, message: "An asset already exists for this draft." };
+  }
 
   if (existing[0]) {
     return regenerateFromPrevious({ db, storage, draft, nextVersion, previousAsset: existing[0] });

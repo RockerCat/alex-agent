@@ -10,9 +10,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // that exact function with the exact expected arguments, and translate
 // its result into a safe response.
 
-const { runMarketingCycleMock, notifyAttentionIfNeededMock } = vi.hoisted(() => ({
+const { runMarketingCycleMock, notifyAttentionIfNeededMock, createContinuationDepsMock, runSweepMock } = vi.hoisted(() => ({
   runMarketingCycleMock: vi.fn(),
   notifyAttentionIfNeededMock: vi.fn(),
+  createContinuationDepsMock: vi.fn(),
+  runSweepMock: vi.fn(),
+}));
+
+vi.mock("@/lib/agent/postApprovalContinuation", () => ({
+  createProductionContinuationDeps: createContinuationDepsMock,
+  runPostApprovalContinuationSweep: runSweepMock,
 }));
 
 vi.mock("@/lib/agent/runtime", () => ({
@@ -60,6 +67,10 @@ describe("GET /api/cron/marketing-cycle", () => {
     runMarketingCycleMock.mockReset();
     notifyAttentionIfNeededMock.mockReset();
     notifyAttentionIfNeededMock.mockResolvedValue({ attempted: 0, sent: 0, alreadySent: 0, failed: 0, skippedNotConfigured: true });
+    createContinuationDepsMock.mockReset();
+    createContinuationDepsMock.mockReturnValue(null);
+    runSweepMock.mockReset();
+    runSweepMock.mockResolvedValue({ considered: 0, outcomes: [] });
     process.env.CRON_SECRET = SECRET;
   });
 
@@ -230,6 +241,53 @@ describe("GET /api/cron/marketing-cycle", () => {
     await GET(getRequest("Bearer wrong-secret"));
 
     expect(notifyAttentionIfNeededMock).not.toHaveBeenCalled();
+  });
+
+  it("17. runs the email post-approval catch-up sweep only after the marketing cycle has returned", async () => {
+    const order: string[] = [];
+    runMarketingCycleMock.mockImplementation(async () => {
+      order.push("cycle");
+      return { run: { id: "run-1", status: "completed", decision: "NO_ACTION" } };
+    });
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+    runSweepMock.mockImplementation(async () => {
+      order.push("sweep");
+      return { considered: 1, outcomes: ["review_sent"] };
+    });
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(response.status).toBe(200);
+    expect(runSweepMock).toHaveBeenCalledWith({ __fake: "deps" });
+    expect(order).toEqual(["cycle", "sweep"]);
+  });
+
+  it("18. skips the sweep entirely when email/app origin isn't configured", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "completed", decision: "NO_ACTION" } });
+    createContinuationDepsMock.mockReturnValue(null);
+
+    await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(runSweepMock).not.toHaveBeenCalled();
+  });
+
+  it("19. a sweep failure never changes the successful cron response", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "completed", decision: "NO_ACTION" } });
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+    runSweepMock.mockRejectedValue(new Error("image provider exploded with internal details"));
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ ok: true, runId: "run-1", status: "completed", decision: "NO_ACTION", concurrent: false });
+  });
+
+  it("20. an authentication failure never runs the sweep", async () => {
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+    await GET(getRequest("Bearer wrong-secret"));
+    expect(runSweepMock).not.toHaveBeenCalled();
+    expect(createContinuationDepsMock).not.toHaveBeenCalled();
   });
 });
 

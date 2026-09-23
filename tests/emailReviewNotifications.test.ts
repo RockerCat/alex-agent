@@ -181,7 +181,7 @@ describe("prepareAssetReviewNotification", () => {
     ]);
   }
 
-  it("prepares an asset email with an inline CID image and an exact-version Aprobar imagen link", async () => {
+  it("prepares a finished-post email with an inline CID image and an exact-version Aprobar publicación link", async () => {
     const { fake, db } = setup({ status: "approved" });
     seedAsset(fake);
     const storage = new FakeAssetStorage();
@@ -192,7 +192,7 @@ describe("prepareAssetReviewNotification", () => {
     expect(outboxRows(fake)[0]).toMatchObject({ notification_type: "asset_pending_review", subject_type: "content_asset", subject_id: ASSET_ID, subject_version: 3 });
     expect(prepared.email.html).toContain('src="cid:solardesk-asset-v3"');
     expect(prepared.email.inlineAttachments).toHaveLength(1);
-    expect(prepared.email.text).toContain(`Aprobar imagen: ${BASE_URL}/email/action#t=`);
+    expect(prepared.email.text).toContain(`Aprobar publicación: ${BASE_URL}/email/action#t=`);
     expect(fake.getAll("email_action_tokens")).toEqual([expect.objectContaining({ action: "approve_asset", subject_version: 3 })]);
 
     const [token] = extractTokens(prepared.email.text);

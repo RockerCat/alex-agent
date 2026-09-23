@@ -119,7 +119,7 @@ describe("publishAssetToInstagram", () => {
     expect(outcome.status).toBe("success");
     expect(instagramClient.createCalls).toHaveLength(1);
     expect(instagramClient.createCalls[0].imageUrl).toBe(`https://fake-storage.local/${asset.storage_path}?signed=1`);
-    expect(instagramClient.createCalls[0].caption).toBe(draft.caption);
+    expect(instagramClient.createCalls[0].caption).toBe(`${draft.caption}\n\n#energiasolar #solardesk`);
     expect(instagramClient.publishCalls).toEqual(["container-1"]);
     expect(outcome.publication?.channel).toBe("instagram");
     expect(outcome.publication?.meta_post_id).toBe("ig-media-123");
@@ -182,7 +182,7 @@ describe("publishAssetToInstagram", () => {
 
       expect(outcome.status).toBe("success");
       const caption = instagramClient.createCalls[0].caption;
-      expect(caption).toBe(draft.caption);
+      expect(caption).toBe(`${draft.caption}\n\n#energiasolar #solardesk`);
       expect(caption.split("https://solardesk.co/register")).toHaveLength(2);
     });
 
@@ -200,6 +200,38 @@ describe("publishAssetToInstagram", () => {
 
       expect(outcome.status).toBe("success");
       expect(instagramClient.createCalls[0].caption).not.toContain("Comenzar gratis");
+    });
+  });
+
+  describe("final caption limit", () => {
+    it("rejects an over-limit COMPOSED caption before claiming a slot or calling Meta — never truncated", async () => {
+      const { fake, db, storage } = setup();
+      // 2,190-char caption is valid on its own; + the two hashtags it exceeds 2,200.
+      const draft = seedDraft(fake, "draft-1", { caption: "a".repeat(2190), cta_url: null });
+      const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+      const instagramClient = new ScriptedInstagramClient();
+
+      const outcome = await publishAssetToInstagram({ db, storage, instagramClient, draftId: draft.id, assetId: asset.id, delay: noDelay });
+
+      expect(outcome.status).toBe("ineligible");
+      expect(outcome.message).toContain("Instagram allows at most 2200");
+      expect(instagramClient.createCalls).toHaveLength(0);
+      expect(instagramClient.publishCalls).toHaveLength(0);
+      expect(fake.getAll("asset_publications")).toHaveLength(0);
+    });
+
+    it("publishes a composed caption of exactly 2,200 characters unchanged", async () => {
+      const { fake, db, storage } = setup();
+      const suffix = "\n\n#energiasolar #solardesk";
+      const draft = seedDraft(fake, "draft-1", { caption: "a".repeat(2200 - suffix.length), cta_url: null });
+      const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
+      const instagramClient = new ScriptedInstagramClient();
+
+      const outcome = await publishAssetToInstagram({ db, storage, instagramClient, draftId: draft.id, assetId: asset.id, delay: noDelay });
+
+      expect(outcome.status).toBe("success");
+      expect(instagramClient.createCalls[0].caption).toHaveLength(2200);
+      expect(instagramClient.createCalls[0].caption.endsWith("#energiasolar #solardesk")).toBe(true);
     });
   });
 

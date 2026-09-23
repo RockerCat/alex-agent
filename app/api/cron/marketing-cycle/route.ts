@@ -6,6 +6,7 @@ import { OpenAiClient } from "@/lib/agent/aiClient";
 import { runMarketingCycle } from "@/lib/agent/runtime";
 import { notifyAttentionIfNeeded } from "@/lib/agent/notifications";
 import { MetaGraphWhatsAppClient } from "@/lib/agent/whatsappClient";
+import { createProductionContinuationDeps, runPostApprovalContinuationSweep } from "@/lib/agent/postApprovalContinuation";
 
 // Autonomy v1 Phase 1B — the authenticated headless entry point that lets
 // Vercel Cron (see vercel.json; not yet configured with a real
@@ -87,6 +88,26 @@ export async function GET(request: Request) {
       // a provider-level failure, which notifyAttentionIfNeeded already
       // catches internally) affect this successful cron response.
       console.error("WhatsApp attention notification dispatch failed:", notifyErr instanceof Error ? notifyErr.message : "unknown error");
+    }
+
+    // Email lifecycle catch-up (recovery only): continues email-approved
+    // image_post drafts that still lack their first asset or their
+    // finished-publication review email — e.g. when the post-response
+    // continuation after an email approval failed or was cut short. Same
+    // isolation as the WhatsApp block above: runs only after the marketing
+    // cycle has finalized, never affects this response, never throws out.
+    // Idempotent and bounded (see runPostApprovalContinuationSweep); it
+    // never regenerates, never re-sends a sent review, never publishes.
+    try {
+      const continuationDeps = createProductionContinuationDeps();
+      if (continuationDeps) {
+        const sweep = await runPostApprovalContinuationSweep(continuationDeps);
+        if (sweep.outcomes.length > 0) {
+          console.log(`Post-approval continuation sweep: ${sweep.outcomes.join(", ")}`);
+        }
+      }
+    } catch (sweepErr) {
+      console.error("Post-approval continuation sweep failed:", sweepErr instanceof Error ? sweepErr.message : "unknown error");
     }
 
     return NextResponse.json({

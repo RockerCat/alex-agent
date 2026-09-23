@@ -260,12 +260,30 @@ async function finalizeToken(db: SupabaseClient<Database>, row: EmailActionToken
   return Boolean(data);
 }
 
+export interface AppliedEmailAction {
+  action: ExecutableEmailAction;
+  subjectType: EmailActionSubjectType;
+  subjectId: string;
+  subjectVersion: number;
+}
+
 /**
  * The explicit, user-confirmed action (POST only). Delegates the decision
  * to the existing authoritative domain function with the token's exact
  * version, then finalizes the token exactly once.
+ *
+ * `onApplied` is invoked only when THIS call applied the decision (never
+ * for stale/used/invalid/failed attempts), after the token is finalized —
+ * the route uses it to schedule post-response continuation. It receives
+ * internal identifiers that are never included in the returned (public)
+ * confirmation.
  */
-export async function confirmEmailAction(db: SupabaseClient<Database>, rawToken: unknown, now: Date = new Date()): Promise<EmailActionConfirmation> {
+export async function confirmEmailAction(
+  db: SupabaseClient<Database>,
+  rawToken: unknown,
+  now: Date = new Date(),
+  options: { onApplied?: (applied: AppliedEmailAction) => void } = {}
+): Promise<EmailActionConfirmation> {
   const row = await findTokenRow(db, rawToken);
   if (!row) return { result: "invalid" };
 
@@ -303,7 +321,15 @@ export async function confirmEmailAction(db: SupabaseClient<Database>, rawToken:
     return { result: "already_processed", outcome: current?.outcome ?? null, context: subject.context };
   }
 
-  if (outcome === "applied") return { result: "applied", context: subject.context };
+  if (outcome === "applied") {
+    options.onApplied?.({
+      action: row.action as ExecutableEmailAction,
+      subjectType: row.subject_type,
+      subjectId: row.subject_id,
+      subjectVersion: row.subject_version,
+    });
+    return { result: "applied", context: subject.context };
+  }
   if (outcome === "stale") return { result: "stale", context: subject.context };
   return { result: "not_actionable", currentStatus: currentStatus ?? "unknown", context: subject.context };
 }
