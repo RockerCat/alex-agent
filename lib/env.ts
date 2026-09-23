@@ -139,4 +139,21 @@ export const env = {
   // other Meta credential here: missing config must make the webhook
   // refuse every POST, never fall back to accepting an unsigned one.
   metaWhatsappAppSecret: () => process.env.META_WHATSAPP_APP_SECRET?.trim() || null,
+  // Email human-in-the-loop, outbound only (see lib/agent/resendEmailClient.ts,
+  // lib/agent/emailConfig.ts). Nullable, same fail-closed posture as the
+  // Meta accessors: importing the app never requires email to be
+  // configured; only an actual send refuses to proceed without it.
+  // Server-side only; never expose via NEXT_PUBLIC_*.
+  //
+  // RESEND_API_KEY is also the name the Resend SDK itself falls back to —
+  // lib/agent/resendEmailClient.ts always passes the key explicitly and
+  // never constructs the SDK without one, so that fallback is never relied on.
+  resendApiKey: () => process.env.RESEND_API_KEY?.trim() || null,
+  // Sender, e.g. "AlexAgent <review@mail.agent.alexsosa.me>" — must be an
+  // address on a Resend-verified domain.
+  emailFrom: () => process.env.EMAIL_FROM?.trim() || null,
+  // Alex's own review inbox for this single-owner first slice — same
+  // env-level durability as META_WHATSAPP_DESTINATION_NUMBER; should move
+  // to persisted per-brand settings once there is more than one recipient/brand.
+  emailReviewRecipient: () => process.env.EMAIL_REVIEW_RECIPIENT?.trim() || null,
 };
