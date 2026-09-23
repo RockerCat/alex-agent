@@ -186,6 +186,89 @@ async function main() {
   );
   console.log("OK: notification_outbox allows a new subject_version as an independent notification");
 
+  // Exercise the email widening of notification_outbox (0012): 'email'
+  // is its own independent slot for the same subject+version as an
+  // existing WhatsApp row, the new types/subject type are accepted, and
+  // an unrecognized channel is still rejected.
+  const emailOutbox = await db.query(
+    `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status, rfc_message_id)
+     values ('solardesk', 'email', 'draft_pending_approval', 'content_draft', $1, 1, 'pending', '<abc@example.test>')
+     returning id;`,
+    [draftId]
+  );
+  const emailOutboxId = emailOutbox.rows[0].id;
+  await db.query(
+    `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status)
+     values ('solardesk', 'email', 'asset_pending_review', 'content_asset', $1, 1, 'pending'),
+            ('solardesk', 'email', 'question_pending', 'agent_question', gen_random_uuid(), 1, 'pending');`,
+    [assetId]
+  );
+  console.log("OK: notification_outbox accepts email channel, asset_pending_review, question_pending, content_asset");
+
+  let unknownOutboxChannelBlocked = false;
+  try {
+    await db.query(
+      `insert into notification_outbox (brand, channel, notification_type, subject_type, subject_id, subject_version, status)
+       values ('solardesk', 'sms', 'draft_pending_approval', 'content_draft', $1, 9, 'pending');`,
+      [draftId]
+    );
+  } catch (err) {
+    unknownOutboxChannelBlocked = /notification_outbox_channel_check/.test(String(err));
+  }
+  if (!unknownOutboxChannelBlocked) throw new Error("Expected CHECK constraint to reject an unrecognized notification channel");
+  console.log("OK: notification_outbox.channel rejects an unrecognized channel");
+
+  // email_action_tokens (0012): hashed-only token format, unique hash,
+  // action/subject consistency, consumed_at/outcome consistency.
+  const validHash = "a".repeat(64);
+  const insertToken = (hash, action, subjectType, extra = "") =>
+    db.query(
+      `insert into email_action_tokens (token_hash, notification_id, action, subject_type, subject_id, subject_version, brand, expires_at${extra ? ", consumed_at, outcome" : ""})
+       values ($1, $2, $3, $4, $5, 1, 'solardesk', now() + interval '3 days'${extra});`,
+      [hash, emailOutboxId, action, subjectType, draftId]
+    );
+  await insertToken(validHash, "approve_draft", "content_draft");
+  console.log("OK: email_action_tokens accepts a hashed approve_draft token");
+
+  const expectReject = async (label, fn, pattern) => {
+    let blocked = false;
+    try {
+      await fn();
+    } catch (err) {
+      blocked = pattern.test(String(err));
+    }
+    if (!blocked) throw new Error(`Expected email_action_tokens to reject: ${label}`);
+    console.log(`OK: email_action_tokens rejects ${label}`);
+  };
+  await expectReject("a duplicate token hash", () => insertToken(validHash, "reject_draft", "content_draft"), /duplicate key/);
+  await expectReject("a non-hash (plaintext-looking) token", () => insertToken("plaintext-token-value", "reply", "content_draft"), /email_action_tokens_token_hash_check/);
+  await expectReject("approve_draft against a non-draft subject", () => insertToken("b".repeat(64), "approve_draft", "content_asset"), /email_action_tokens_check/);
+  await expectReject("approve_asset against a non-asset subject", () => insertToken("c".repeat(64), "approve_asset", "content_draft"), /email_action_tokens_check/);
+  await expectReject("consumed_at without an outcome", () => insertToken("d".repeat(64), "reply", "agent_question", ", now(), null"), /email_action_tokens_check/);
+  await insertToken("e".repeat(64), "reply", "agent_question", ", now(), 'applied'");
+  console.log("OK: email_action_tokens accepts a consumed token with an outcome");
+
+  // email_inbound_events (0012): unique provider event identity, and
+  // 'applied' requires a correlated reply token.
+  await db.exec(`insert into email_inbound_events (provider_event_id, sanitized_text) values ('evt-1', 'Cambia el título');`);
+  let duplicateInboundBlocked = false;
+  try {
+    await db.exec(`insert into email_inbound_events (provider_event_id) values ('evt-1');`);
+  } catch (err) {
+    duplicateInboundBlocked = /duplicate key/.test(String(err));
+  }
+  if (!duplicateInboundBlocked) throw new Error("Expected unique constraint to block a duplicate inbound provider event");
+  console.log("OK: email_inbound_events provider_event_id uniqueness enforced");
+
+  let uncorrelatedAppliedBlocked = false;
+  try {
+    await db.exec(`insert into email_inbound_events (provider_event_id, status) values ('evt-2', 'applied');`);
+  } catch (err) {
+    uncorrelatedAppliedBlocked = /email_inbound_events_check/.test(String(err));
+  }
+  if (!uncorrelatedAppliedBlocked) throw new Error("Expected CHECK constraint to block an 'applied' inbound event without a reply token");
+  console.log("OK: email_inbound_events rejects 'applied' without a correlated reply token");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

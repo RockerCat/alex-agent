@@ -37,7 +37,17 @@ export interface RegenerateOutcome {
    * changing the outward-facing status contract other callers rely on.
    */
   budgetBlocked?: boolean;
+  /**
+   * True only when status === "failed" because a version-guarded call
+   * (expectedVersion) found the draft no longer at that version /
+   * pending_approval — before any AI spend, or at persist time if the
+   * draft was approved/rejected/revised while the Executor was running.
+   */
+  staleVersion?: boolean;
 }
+
+const STALE_AT_PERSIST_MESSAGE =
+  "The draft changed (approved, rejected, or revised) while this revision was being generated; the revision was discarded.";
 
 /**
  * Generate-validate-persist loop for turning a draft (blocked placeholder
@@ -60,8 +70,17 @@ export async function resumeDraftCore(params: {
   feedbackCategory?: FeedbackCategory;
   feedbackNote?: string | null;
   factCorrection?: string;
+  /**
+   * Version-guarded mode (see requestRevision): every draft write below
+   * becomes a compare-and-set on (version = expectedVersion, status =
+   * pending_approval), so an approve/reject that lands while the
+   * Executor is running is never overwritten. Omitted → unchanged
+   * legacy behavior for every existing caller.
+   */
+  expectedVersion?: number;
 }): Promise<RegenerateOutcome> {
-  const { db, aiClient, budgetGuard, agentRunId, draft } = params;
+  const { db, aiClient, budgetGuard, agentRunId, draft, expectedVersion } = params;
+  const guarded = expectedVersion !== undefined;
 
   const context = await loadAgentContext(db, draft.brand as "solardesk");
   const brief = draftToBrief(draft);
@@ -142,6 +161,26 @@ export async function resumeDraftCore(params: {
         return { status: "failed", message: qError?.message };
       }
 
+      if (guarded) {
+        const { data: blocked, error: blockError } = await db
+          .from("content_drafts")
+          .update({ status: "revision_requested", blocked_on_question_id: question.id })
+          .eq("id", draft.id)
+          .eq("status", "pending_approval")
+          .eq("version", expectedVersion)
+          .select("id")
+          .maybeSingle();
+        if (blockError || !blocked) {
+          // The draft moved on while the Executor ran — this question no
+          // longer blocks anything, so it must not linger as open work.
+          await db.from("agent_questions").update({ status: "dismissed" }).eq("id", question.id).eq("status", "open");
+          return blockError
+            ? { status: "failed", message: blockError.message }
+            : { status: "failed", staleVersion: true, message: STALE_AT_PERSIST_MESSAGE };
+        }
+        return { status: "blocked_on_question", questionId: question.id };
+      }
+
       await db
         .from("content_drafts")
         .update({ status: "revision_requested", blocked_on_question_id: question.id })
@@ -154,7 +193,7 @@ export async function resumeDraftCore(params: {
       const output = validation.output;
       const nextVersion = draft.version + 1;
 
-      await db.from("content_revisions").insert({
+      const revisionRow = {
         draft_id: draft.id,
         version: nextVersion,
         title: output.title,
@@ -164,28 +203,56 @@ export async function resumeDraftCore(params: {
         cta_text: output.cta,
         visual_direction: output.visualDirection,
         hashtags: output.hashtags,
-        source: "executor",
+        source: "executor" as const,
         feedback_category: params.feedbackCategory ?? null,
         feedback_note: params.feedbackNote ?? null,
         created_by_run: agentRunId,
-      });
+      };
+      const draftUpdate = {
+        version: nextVersion,
+        status: "pending_approval" as const,
+        title: output.title,
+        hook: output.hook,
+        body: { slides: output.slides },
+        caption: output.caption,
+        cta_text: output.cta,
+        visual_direction: output.visualDirection,
+        hashtags: output.hashtags,
+        blocked_on_question_id: null,
+        rejected_at: null,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (guarded) {
+        // Compare-and-set the draft FIRST, so a draft that moved on
+        // mid-generation never gets an orphan content_revisions row for
+        // a version that was never materialized.
+        const { data: updatedDraft, error: updateError } = await db
+          .from("content_drafts")
+          .update(draftUpdate)
+          .eq("id", draft.id)
+          .eq("status", "pending_approval")
+          .eq("version", expectedVersion)
+          .select("*")
+          .maybeSingle();
+        if (updateError) return { status: "failed", message: updateError.message };
+        if (!updatedDraft) return { status: "failed", staleVersion: true, message: STALE_AT_PERSIST_MESSAGE };
+
+        const { error: revisionError } = await db.from("content_revisions").insert(revisionRow);
+        if (revisionError) {
+          // The draft (the authoritative current content) is already
+          // revised; only its history snapshot failed — surfaced, not
+          // silently ignored, but not reported as an unrevised draft.
+          console.error(`content_revisions snapshot for draft v${nextVersion} failed:`, revisionError.message);
+        }
+        return { status: "revised", draft: updatedDraft };
+      }
+
+      await db.from("content_revisions").insert(revisionRow);
 
       const { data: updatedDraft, error: updateError } = await db
         .from("content_drafts")
-        .update({
-          version: nextVersion,
-          status: "pending_approval",
-          title: output.title,
-          hook: output.hook,
-          body: { slides: output.slides },
-          caption: output.caption,
-          cta_text: output.cta,
-          visual_direction: output.visualDirection,
-          hashtags: output.hashtags,
-          blocked_on_question_id: null,
-          rejected_at: null,
-          updated_at: new Date().toISOString(),
-        })
+        .update(draftUpdate)
         .eq("id", draft.id)
         .select("*")
         .single();
@@ -236,6 +303,8 @@ export async function regenerateDraftContent(params: {
   feedbackCategory?: FeedbackCategory;
   feedbackNote?: string | null;
   factCorrection?: string;
+  /** Forwarded to resumeDraftCore — see its doc comment. */
+  expectedVersion?: number;
 }): Promise<RegenerateOutcome> {
   const { db, aiClient, draft } = params;
 
@@ -265,6 +334,7 @@ export async function regenerateDraftContent(params: {
       feedbackCategory: params.feedbackCategory,
       feedbackNote: params.feedbackNote,
       factCorrection: params.factCorrection,
+      expectedVersion: params.expectedVersion,
     });
 
     if (outcome.budgetBlocked) {
@@ -305,8 +375,19 @@ export async function requestRevision(params: {
   draftId: string;
   category: FeedbackCategory;
   note?: string | null;
+  /**
+   * When provided, the revision only proceeds (and only persists) if the
+   * draft is still at exactly this version and pending_approval —
+   * checked before any lock/AI spend, and again as a compare-and-set at
+   * persist time. Omitted → unchanged legacy behavior.
+   */
+  expectedVersion?: number;
 }): Promise<RegenerateOutcome> {
-  const { db, aiClient, draftId, category, note } = params;
+  const { db, aiClient, draftId, category, note, expectedVersion } = params;
+
+  if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 1)) {
+    return { status: "failed", message: "Invalid expected draft version." };
+  }
 
   const { data: draft, error } = await db.from("content_drafts").select("*").eq("id", draftId).single();
   if (error || !draft) {
@@ -314,6 +395,13 @@ export async function requestRevision(params: {
   }
   if (draft.status !== "pending_approval") {
     return { status: "failed", message: `Draft is in status "${draft.status}" and cannot be revised right now.` };
+  }
+  if (expectedVersion !== undefined && draft.version !== expectedVersion) {
+    return {
+      status: "failed",
+      staleVersion: true,
+      message: `Draft is now at version ${draft.version}; changes requested for version ${expectedVersion} were not applied.`,
+    };
   }
 
   const factCorrection =
@@ -328,5 +416,6 @@ export async function requestRevision(params: {
     feedbackCategory: category,
     feedbackNote: note ?? null,
     factCorrection,
+    expectedVersion,
   });
 }

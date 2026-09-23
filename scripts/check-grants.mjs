@@ -36,6 +36,8 @@ async function main() {
     "content_drafts",
     "content_revisions",
     "marketing_plans",
+    "email_action_tokens",
+    "email_inbound_events",
   ];
   const expectedPrivileges = ["SELECT", "INSERT", "UPDATE", "DELETE"];
 

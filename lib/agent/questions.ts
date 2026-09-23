@@ -42,13 +42,27 @@ export async function answerQuestion(params: {
   if (question.status === "answered") {
     return { ok: false, message: "Question was already answered." };
   }
+  if (question.status !== "open") {
+    return { ok: false, message: `Question is "${question.status}" and can no longer be answered.` };
+  }
 
-  const { error: updateError } = await db
+  // The read above only explains early refusals; this conditional UPDATE
+  // is the authoritative guard. Two concurrent answers (e.g. a dashboard
+  // submit racing a future email reply, or a webhook retry) can both
+  // pass the read, but only one can move the row out of "open" — the
+  // loser must never overwrite the recorded answer or resume work twice.
+  const { data: transitioned, error: updateError } = await db
     .from("agent_questions")
     .update({ status: "answered", answer, answered_at: new Date().toISOString() })
-    .eq("id", questionId);
+    .eq("id", questionId)
+    .eq("status", "open")
+    .select("id")
+    .maybeSingle();
   if (updateError) {
     return { ok: false, message: updateError.message };
+  }
+  if (!transitioned) {
+    return { ok: false, message: "Question was already answered." };
   }
 
   if (!question.context_draft_id) {

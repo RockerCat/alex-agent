@@ -102,6 +102,7 @@ function defaultsForTable(table: string): Row {
         provider_status_at: null,
         provider_error_code: null,
         provider_error_detail: null,
+        rfc_message_id: null,
       };
     case "whatsapp_inbound_events":
       return {

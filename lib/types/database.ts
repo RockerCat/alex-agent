@@ -208,9 +208,12 @@ export type AiUsageRow = {
   created_at: string;
 }
 
-export type NotificationChannel = "whatsapp";
-export type NotificationType = "draft_pending_approval" | "blocking_question";
-export type NotificationSubjectType = "content_draft" | "agent_question";
+export type NotificationChannel = "whatsapp" | "email";
+// "blocking_question" is WhatsApp's existing type; email uses
+// "question_pending" (any open question, blocking or not) — see
+// supabase/migrations/0012_email_hitl_foundation.sql.
+export type NotificationType = "draft_pending_approval" | "blocking_question" | "asset_pending_review" | "question_pending";
+export type NotificationSubjectType = "content_draft" | "agent_question" | "content_asset";
 export type NotificationStatus = "pending" | "sent" | "failed";
 // Meta's own asynchronous delivery-status callback — a separate signal
 // from NotificationStatus above (which means "accepted by Meta"); see
@@ -236,6 +239,8 @@ export type NotificationOutboxRow = {
   provider_status_at: string | null;
   provider_error_code: number | null;
   provider_error_detail: string | null;
+  /** Email only: the outbound RFC 5322 Message-ID, when the provider exposes it. Always null for WhatsApp. */
+  rfc_message_id: string | null;
 }
 
 // WhatsApp Inbound Phase 1 (see lib/agent/whatsappInboundCommands.ts).
@@ -260,6 +265,45 @@ export type WhatsappInboundEventRow = {
   resolved_draft_id: string | null;
   outcome: WhatsappInboundOutcome;
   created_at: string;
+}
+
+// Email human-in-the-loop foundation (0012_email_hitl_foundation.sql).
+// Only a SHA-256 hash of an action token is ever persisted.
+export type EmailActionType = "approve_draft" | "reject_draft" | "approve_asset" | "reply";
+export type EmailActionSubjectType = "content_draft" | "content_asset" | "agent_question";
+export type EmailActionOutcome = "applied" | "stale" | "state_guard_failed" | "failed";
+
+export type EmailActionTokenRow = {
+  id: string;
+  token_hash: string;
+  notification_id: string;
+  action: EmailActionType;
+  subject_type: EmailActionSubjectType;
+  subject_id: string;
+  subject_version: number;
+  brand: string;
+  expires_at: string;
+  consumed_at: string | null;
+  outcome: EmailActionOutcome | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Deliberately excludes raw MIME, inbound HTML, attachments, subject line,
+// and sender address — only the sanitized text a retry needs.
+export type EmailInboundStatus = "pending" | "applied" | "stale" | "rejected_sender" | "ignored" | "failed";
+
+export type EmailInboundEventRow = {
+  id: string;
+  provider_event_id: string;
+  reply_token_id: string | null;
+  status: EmailInboundStatus;
+  attempts: number;
+  sanitized_text: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  processed_at: string | null;
 }
 
 // Matches @supabase/postgrest-js's GenericTable/GenericSchema shape so the
@@ -287,6 +331,8 @@ export type Database = {
       ai_usage: TableDef<AiUsageRow>;
       notification_outbox: TableDef<NotificationOutboxRow>;
       whatsapp_inbound_events: TableDef<WhatsappInboundEventRow>;
+      email_action_tokens: TableDef<EmailActionTokenRow>;
+      email_inbound_events: TableDef<EmailInboundEventRow>;
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
