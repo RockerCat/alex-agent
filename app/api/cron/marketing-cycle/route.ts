@@ -7,6 +7,7 @@ import { runMarketingCycle } from "@/lib/agent/runtime";
 import { notifyAttentionIfNeeded } from "@/lib/agent/notifications";
 import { MetaGraphWhatsAppClient } from "@/lib/agent/whatsappClient";
 import { createProductionContinuationDeps, runPostApprovalContinuationSweep } from "@/lib/agent/postApprovalContinuation";
+import { createProductionContentReviewDeps, runContentReviewEmailSweep } from "@/lib/agent/contentReviewSweep";
 
 // Autonomy v1 Phase 1B — the authenticated headless entry point that lets
 // Vercel Cron (see vercel.json; not yet configured with a real
@@ -66,35 +67,64 @@ export async function GET(request: Request) {
     const aiClient = new OpenAiClient();
     const result = await runMarketingCycle({ db, aiClient, brand: "solardesk", trigger: "scheduled" });
 
-    // Only after the marketing cycle's own durable state is fully
-    // finalized (runMarketingCycle has already returned) — this must
-    // never affect the response above, which reflects a completed
-    // cycle regardless of what happens here. Independently wrapped: a
-    // WhatsApp/config/provider failure is caught, safely persisted per
-    // notification_outbox item inside notifyAttentionIfNeeded itself,
-    // and only ever logged here — never re-thrown, never changes the
-    // HTTP status/body already decided above.
+    // Everything below runs only after the marketing cycle's own durable
+    // state is fully finalized (runMarketingCycle has already returned),
+    // and must never affect the response below, which reflects a completed
+    // cycle regardless of what happens here. Each step is independently
+    // wrapped: failures are logged only — never re-thrown, never change
+    // the HTTP status/body.
+
+    // 1. Email is the primary human-attention channel: send a content-
+    //    review email for every durable pending_approval draft that hasn't
+    //    had one for its current version (drafts this wake created AND
+    //    earlier drafts whose email failed or was missed). Reads durable
+    //    draft state — never the Planner output — and makes no model call.
+    let contentReviewEmailActive = false;
     try {
-      const whatsappClient = new MetaGraphWhatsAppClient();
-      await notifyAttentionIfNeeded({
-        db,
-        whatsappClient,
-        brand: "solardesk",
-        runId: result.run.id,
-        runDecision: result.run.decision,
-      });
-    } catch (notifyErr) {
-      // Never let a bug in the notification layer itself (as opposed to
-      // a provider-level failure, which notifyAttentionIfNeeded already
-      // catches internally) affect this successful cron response.
-      console.error("WhatsApp attention notification dispatch failed:", notifyErr instanceof Error ? notifyErr.message : "unknown error");
+      const contentReviewDeps = createProductionContentReviewDeps();
+      contentReviewEmailActive = contentReviewDeps !== null;
+      if (contentReviewDeps) {
+        const sweep = await runContentReviewEmailSweep(contentReviewDeps);
+        if (sweep.outcomes.length > 0) {
+          console.log(`Content-review email sweep: ${sweep.outcomes.join(", ")}`);
+        }
+      }
+    } catch (sweepErr) {
+      console.error("Content-review email sweep failed:", sweepErr instanceof Error ? sweepErr.message : "unknown error");
     }
 
-    // Email lifecycle catch-up (recovery only): continues email-approved
+    // 2. WhatsApp attention notifications — dormant/fallback. When email
+    //    review is active, a pending-approval attention event
+    //    (WAIT_FOR_APPROVAL) is already covered by the content-review
+    //    email above, so WhatsApp is skipped rather than notifying twice.
+    //    Blocking questions (NEEDS_HUMAN_INPUT) are unchanged: email can't
+    //    carry questions until inbound replies exist (Phase 2C). A provider
+    //    failure is persisted per notification_outbox item inside
+    //    notifyAttentionIfNeeded itself.
+    const pendingApprovalCoveredByEmail = contentReviewEmailActive && result.run.decision === "WAIT_FOR_APPROVAL";
+    if (!pendingApprovalCoveredByEmail) {
+      try {
+        const whatsappClient = new MetaGraphWhatsAppClient();
+        await notifyAttentionIfNeeded({
+          db,
+          whatsappClient,
+          brand: "solardesk",
+          runId: result.run.id,
+          runDecision: result.run.decision,
+        });
+      } catch (notifyErr) {
+        // Never let a bug in the notification layer itself (as opposed to
+        // a provider-level failure, which notifyAttentionIfNeeded already
+        // catches internally) affect this successful cron response.
+        console.error("WhatsApp attention notification dispatch failed:", notifyErr instanceof Error ? notifyErr.message : "unknown error");
+      }
+    }
+
+    // 3. Email lifecycle catch-up (recovery only): continues email-approved
     // image_post drafts that still lack their first asset or their
     // finished-publication review email — e.g. when the post-response
     // continuation after an email approval failed or was cut short. Same
-    // isolation as the WhatsApp block above: runs only after the marketing
+    // isolation as the blocks above: runs only after the marketing
     // cycle has finalized, never affects this response, never throws out.
     // Idempotent and bounded (see runPostApprovalContinuationSweep); it
     // never regenerates, never re-sends a sent review, never publishes.

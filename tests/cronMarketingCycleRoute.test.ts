@@ -10,11 +10,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // that exact function with the exact expected arguments, and translate
 // its result into a safe response.
 
-const { runMarketingCycleMock, notifyAttentionIfNeededMock, createContinuationDepsMock, runSweepMock } = vi.hoisted(() => ({
+const { runMarketingCycleMock, notifyAttentionIfNeededMock, createContinuationDepsMock, runSweepMock, createContentReviewDepsMock, runContentReviewSweepMock } = vi.hoisted(() => ({
   runMarketingCycleMock: vi.fn(),
   notifyAttentionIfNeededMock: vi.fn(),
   createContinuationDepsMock: vi.fn(),
   runSweepMock: vi.fn(),
+  createContentReviewDepsMock: vi.fn(),
+  runContentReviewSweepMock: vi.fn(),
+}));
+
+vi.mock("@/lib/agent/contentReviewSweep", () => ({
+  createProductionContentReviewDeps: createContentReviewDepsMock,
+  runContentReviewEmailSweep: runContentReviewSweepMock,
 }));
 
 vi.mock("@/lib/agent/postApprovalContinuation", () => ({
@@ -71,6 +78,10 @@ describe("GET /api/cron/marketing-cycle", () => {
     createContinuationDepsMock.mockReturnValue(null);
     runSweepMock.mockReset();
     runSweepMock.mockResolvedValue({ considered: 0, outcomes: [] });
+    createContentReviewDepsMock.mockReset();
+    createContentReviewDepsMock.mockReturnValue(null);
+    runContentReviewSweepMock.mockReset();
+    runContentReviewSweepMock.mockResolvedValue({ outcomes: [] });
     process.env.CRON_SECRET = SECRET;
   });
 
@@ -281,6 +292,88 @@ describe("GET /api/cron/marketing-cycle", () => {
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ ok: true, runId: "run-1", status: "completed", decision: "NO_ACTION", concurrent: false });
+  });
+
+  it("21. sends content-review emails from durable state after the cycle, before WhatsApp and the continuation sweep", async () => {
+    const order: string[] = [];
+    runMarketingCycleMock.mockImplementation(async () => {
+      order.push("cycle");
+      return { run: { id: "run-1", status: "completed", decision: "CREATE_PLAN" } };
+    });
+    createContentReviewDepsMock.mockReturnValue({ __fake: "reviewDeps" });
+    runContentReviewSweepMock.mockImplementation(async () => {
+      order.push("contentReview");
+      return { outcomes: ["sent", "sent"] };
+    });
+    notifyAttentionIfNeededMock.mockImplementation(async () => {
+      order.push("whatsapp");
+      return { attempted: 0, sent: 0, alreadySent: 0, failed: 0, skippedNotConfigured: false };
+    });
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+    runSweepMock.mockImplementation(async () => {
+      order.push("continuation");
+      return { considered: 0, outcomes: [] };
+    });
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(response.status).toBe(200);
+    // The sweep receives only its deps — never the Planner's decision/output.
+    expect(runContentReviewSweepMock).toHaveBeenCalledWith({ __fake: "reviewDeps" });
+    expect(order).toEqual(["cycle", "contentReview", "whatsapp", "continuation"]);
+    expect(runMarketingCycleMock).toHaveBeenCalledTimes(1); // no additional Planner call
+  });
+
+  it("22. email review active: no duplicate WhatsApp notification for a pending-approval (WAIT_FOR_APPROVAL) wake", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "skipped", decision: "WAIT_FOR_APPROVAL" } });
+    createContentReviewDepsMock.mockReturnValue({ __fake: "reviewDeps" });
+
+    await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(runContentReviewSweepMock).toHaveBeenCalledTimes(1);
+    expect(notifyAttentionIfNeededMock).not.toHaveBeenCalled();
+  });
+
+  it("23. email review active: blocking questions (NEEDS_HUMAN_INPUT) still use the existing WhatsApp path unchanged", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "completed", decision: "NEEDS_HUMAN_INPUT" } });
+    createContentReviewDepsMock.mockReturnValue({ __fake: "reviewDeps" });
+
+    await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(notifyAttentionIfNeededMock).toHaveBeenCalledTimes(1);
+    expect(notifyAttentionIfNeededMock.mock.calls[0][0].runDecision).toBe("NEEDS_HUMAN_INPUT");
+  });
+
+  it("24. email review NOT configured: WAIT_FOR_APPROVAL falls back to the existing WhatsApp behavior", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "skipped", decision: "WAIT_FOR_APPROVAL" } });
+    createContentReviewDepsMock.mockReturnValue(null);
+
+    await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(runContentReviewSweepMock).not.toHaveBeenCalled();
+    expect(notifyAttentionIfNeededMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("25. a content-review email failure never changes the cron response and never stops the later steps", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "completed", decision: "CREATE_PLAN" } });
+    createContentReviewDepsMock.mockReturnValue({ __fake: "reviewDeps" });
+    runContentReviewSweepMock.mockRejectedValue(new Error("resend exploded with internal details"));
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ ok: true, runId: "run-1", status: "completed", decision: "CREATE_PLAN", concurrent: false });
+    expect(JSON.stringify(body)).not.toContain("resend");
+    expect(runSweepMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("26. an authentication failure never runs the content-review sweep", async () => {
+    createContentReviewDepsMock.mockReturnValue({ __fake: "reviewDeps" });
+    await GET(getRequest("Bearer wrong-secret"));
+    expect(createContentReviewDepsMock).not.toHaveBeenCalled();
+    expect(runContentReviewSweepMock).not.toHaveBeenCalled();
   });
 
   it("20. an authentication failure never runs the sweep", async () => {
