@@ -103,10 +103,16 @@ function Message({ title, body, context }: { title: string; body?: string; conte
 
 const ALREADY_PROCESSED_BODY = "Este enlace ya se usó. No se realizó ningún cambio nuevo.";
 
-/** What approving a finished publication means — shown before confirming and after success. */
+/** What approving a finished publication means — shown before confirming. */
 export function publicationApprovalScope(context: ActionContext): string {
   const channel = CHANNEL_LABELS[context.channel] ?? context.channel;
-  return `Apruebas esta imagen y este texto exactos solo para ${channel}. AlexAgent todavía no publica automáticamente: la pieza quedará lista para publicar.`;
+  return `Apruebas esta imagen y este texto exactos solo para ${channel}. Al confirmar, AlexAgent la publicará automáticamente en ${channel}; no se pedirá otra aprobación.`;
+}
+
+/** After an applied publication approval — never claims it is already published. */
+export function publicationApprovedMessage(context: ActionContext): string {
+  const channel = CHANNEL_LABELS[context.channel] ?? context.channel;
+  return `AlexAgent la publicará automáticamente en ${channel}.`;
 }
 
 export function EmailActionConfirm() {
@@ -152,7 +158,7 @@ export function EmailActionConfirm() {
         return (
           <Message
             title={ACTION_LABELS[confirmation.context.action].done}
-            body={confirmation.context.action === "approve_asset" ? publicationApprovalScope(confirmation.context) : undefined}
+            body={confirmation.context.action === "approve_asset" ? publicationApprovedMessage(confirmation.context) : undefined}
             context={confirmation.context}
           />
         );

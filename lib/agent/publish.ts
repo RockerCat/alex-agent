@@ -44,6 +44,31 @@ export interface PublishAssetOutcome {
   status: "success" | "ineligible" | "failed" | "concurrent";
   message?: string;
   publication?: AssetPublicationRow;
+  /**
+   * True when the provider outcome could not be proven either way (the
+   * post may exist). The publication row is intentionally left in
+   * 'publishing' — "provider outcome requires manual verification; never
+   * automatically retry" — so no path can create a duplicate public post.
+   */
+  providerOutcomeUncertain?: boolean;
+}
+
+/**
+ * Marker prefixed to asset_publications.error_message for every 'failed'
+ * row written by this module from here on. Invariant: a 'failed' row
+ * carrying it means the provider DEFINITELY did not create the post (the
+ * request never reached Meta, or Meta authoritatively rejected it), so
+ * automatic recovery may retry it. Older 'failed' rows lack the marker —
+ * their classification can't be proven — and automatic recovery never
+ * retries them (see lib/agent/postApprovalPublication.ts).
+ */
+export const RETRY_SAFE_FAILURE_MARKER = "[retry-safe]";
+
+/** Diagnostic prefix for a row held in 'publishing' because the provider outcome is uncertain. */
+export const UNCERTAIN_OUTCOME_MARKER = "[uncertain — provider outcome requires manual verification; never retried automatically]";
+
+export function isRetrySafeFailure(row: Pick<AssetPublicationRow, "status" | "error_message">): boolean {
+  return row.status === "failed" && (row.error_message ?? "").startsWith(RETRY_SAFE_FAILURE_MARKER);
 }
 
 async function getExistingPublication(
@@ -60,11 +85,35 @@ async function getExistingPublication(
   return data ?? null;
 }
 
+/** Definite failure: the provider did not create the post. Marked retry-safe (see RETRY_SAFE_FAILURE_MARKER). */
 async function markPublicationFailed(db: SupabaseClient<Database>, id: string, message: string) {
   await db
     .from("asset_publications")
-    .update({ status: "failed", error_message: message, updated_at: new Date().toISOString() })
+    .update({ status: "failed", error_message: `${RETRY_SAFE_FAILURE_MARKER} ${message}`, updated_at: new Date().toISOString() })
     .eq("id", id);
+}
+
+/**
+ * Uncertain provider outcome: the post may or may not exist. The row
+ * deliberately STAYS 'publishing' — the existing claim logic already
+ * refuses to reclaim a 'publishing' row — so neither a human retry nor
+ * automatic recovery can publish again until someone verifies on the
+ * platform. Only a sanitized diagnostic is recorded.
+ */
+async function markPublicationUncertain(db: SupabaseClient<Database>, id: string, message: string) {
+  await db
+    .from("asset_publications")
+    .update({ error_message: `${UNCERTAIN_OUTCOME_MARKER} ${message}`, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("status", "publishing");
+}
+
+function uncertainOutcome(label: string, message: string): PublishAssetOutcome {
+  return {
+    status: "failed",
+    providerOutcomeUncertain: true,
+    message: `${label} did not confirm whether the post was created (${message}). It will NOT be retried automatically — check ${label} manually.`,
+  };
 }
 
 type ClaimResult =
@@ -125,8 +174,9 @@ async function claimPublicationSlot(
   }
 
   // existing.status === "failed": no real post/media resulted from that
-  // attempt — safe to reclaim. Guarded update so only one racing retry
-  // actually wins the reclaim.
+  // attempt — every 'failed' row written now is a definite failure (an
+  // uncertain outcome stays 'publishing' instead). Guarded update so only
+  // one racing retry actually wins the reclaim.
   const { data: reclaimed, error: reclaimError } = await db
     .from("asset_publications")
     .update({ status: "publishing", error_message: null, updated_at: new Date().toISOString() })
@@ -219,9 +269,15 @@ export async function publishAssetToFacebook(params: {
   try {
     result = await facebookClient.publishImagePost({ message: caption, imageBuffer });
   } catch (err) {
+    // Retry-safe ONLY when the client proves Meta did not create the post;
+    // any other error (including an unexpected one) is uncertain → held.
+    if (err instanceof FacebookPublishError && err.retrySafe) {
+      await markPublicationFailed(db, lockRow.id, err.message);
+      return { status: "failed", message: err.message };
+    }
     const message = err instanceof FacebookPublishError ? err.message : `Unexpected error publishing to Facebook: ${err instanceof Error ? err.message : "unknown error"}`;
-    await markPublicationFailed(db, lockRow.id, message);
-    return { status: "failed", message };
+    await markPublicationUncertain(db, lockRow.id, message);
+    return uncertainOutcome("Facebook", message);
   }
 
   const { data: updated, error: updateError } = await db
@@ -269,6 +325,9 @@ const INSTAGRAM_IMAGE_URL_TTL_SECONDS = 300;
 const INSTAGRAM_CONTAINER_POLL_INTERVAL_MS = 1500;
 const INSTAGRAM_CONTAINER_MAX_POLL_ATTEMPTS = 6;
 
+/** A container observed as already PUBLISHED: a public post may exist, so this is never retry-safe. */
+class InstagramContainerAlreadyPublishedError extends InstagramPublishError {}
+
 function defaultDelay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -300,7 +359,7 @@ async function waitForInstagramContainerReady(
       throw new InstagramPublishError("The Instagram media container expired before it could be published (status EXPIRED).");
     }
     if (statusCode === "PUBLISHED") {
-      throw new InstagramPublishError("The Instagram media container was already published by an earlier attempt — refusing to publish it again.");
+      throw new InstagramContainerAlreadyPublishedError("The Instagram media container was already published by an earlier attempt — refusing to publish it again.");
     }
 
     // statusCode === "IN_PROGRESS": wait and poll again, unless this was the last attempt.
@@ -408,6 +467,13 @@ export async function publishAssetToInstagram(params: {
   } catch (err) {
     const message =
       err instanceof InstagramPublishError ? err.message : `Unexpected error checking Instagram media container readiness: ${err instanceof Error ? err.message : "unknown error"}`;
+    // Readiness checks are reads and media_publish was never called in
+    // this attempt, so nothing we did is public — safe to retry. The one
+    // exception: Meta reports the container as already PUBLISHED.
+    if (err instanceof InstagramContainerAlreadyPublishedError) {
+      await markPublicationUncertain(db, lockRow.id, message);
+      return uncertainOutcome("Instagram", message);
+    }
     await markPublicationFailed(db, lockRow.id, message);
     return { status: "failed", message };
   }
@@ -417,10 +483,16 @@ export async function publishAssetToInstagram(params: {
     const published = await instagramClient.publishMediaContainer(creationId);
     mediaId = published.mediaId;
   } catch (err) {
+    // media_publish is the ONE call that makes the post public: retry-safe
+    // only when the client proves Meta rejected it; otherwise held.
+    if (err instanceof InstagramPublishError && err.retrySafe) {
+      await markPublicationFailed(db, lockRow.id, err.message);
+      return { status: "failed", message: err.message };
+    }
     const message =
       err instanceof InstagramPublishError ? err.message : `Unexpected error publishing the Instagram media container: ${err instanceof Error ? err.message : "unknown error"}`;
-    await markPublicationFailed(db, lockRow.id, message);
-    return { status: "failed", message };
+    await markPublicationUncertain(db, lockRow.id, message);
+    return uncertainOutcome("Instagram", message);
   }
 
   const { data: updated, error: updateError } = await db

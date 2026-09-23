@@ -27,7 +27,29 @@ import { env } from "@/lib/env";
 const GRAPH_API_VERSION = "v24.0";
 const GRAPH_API_HOST = "https://graph.instagram.com";
 
-export class InstagramPublishError extends Error {}
+/**
+ * Provider-outcome classification. Only the `media_publish` call makes
+ * anything public; container creation and status reads never do, so the
+ * publisher treats their failures as safe to retry by phase. For a
+ * mutating call, `retrySafe` is true only for an authoritative rejection
+ * (a 4xx response carrying a Graph error object) or a failure before the
+ * request was sent. Transport failures, non-JSON or 5xx responses, and a
+ * success-like response without an id are UNCERTAIN (retrySafe false, the
+ * default) and must never be retried automatically.
+ */
+export class InstagramPublishError extends Error {
+  readonly retrySafe: boolean;
+  constructor(message: string, options: { retrySafe?: boolean } = {}) {
+    super(message);
+    this.retrySafe = options.retrySafe ?? false;
+  }
+}
+
+/** A 4xx response with a Graph API error object: Meta rejected the request, so nothing was created. */
+function isAuthoritativeRejection(status: number, json: unknown): boolean {
+  const errObj = (json as { error?: { message?: unknown; code?: unknown } } | null)?.error;
+  return status >= 400 && status < 500 && Boolean(errObj) && (typeof errObj!.message === "string" || typeof errObj!.code === "number");
+}
 
 export interface InstagramCreateMediaInput {
   /** Temporary HTTPS URL Meta can fetch the image from (see SupabaseAssetStorage.createSignedUrl). */
@@ -94,7 +116,9 @@ export class MetaGraphInstagramClient implements InstagramGraphClient {
 
     if (!response.ok) {
       const errObj = (json as { error?: { message?: string } } | null)?.error;
-      throw new InstagramPublishError(`Meta Graph API rejected the ${resultNoun} request: ${errObj?.message ?? `HTTP ${response.status}`}`);
+      throw new InstagramPublishError(`Meta Graph API rejected the ${resultNoun} request: ${errObj?.message ?? `HTTP ${response.status}`}`, {
+        retrySafe: isAuthoritativeRejection(response.status, json),
+      });
     }
 
     const id = (json as { id?: string } | null)?.id;
@@ -136,7 +160,7 @@ export class MetaGraphInstagramClient implements InstagramGraphClient {
   async getMediaContainerStatus(containerId: string): Promise<InstagramContainerStatusResult> {
     const accessToken = env.metaInstagramAccessToken();
     if (!accessToken) {
-      throw new InstagramPublishError("Meta Instagram configuration is missing.");
+      throw new InstagramPublishError("Meta Instagram configuration is missing.", { retrySafe: true });
     }
 
     const params = new URLSearchParams({ fields: "status_code", access_token: accessToken });
@@ -154,7 +178,7 @@ export class MetaGraphInstagramClient implements InstagramGraphClient {
     const accountId = env.metaInstagramAccountId();
     const accessToken = env.metaInstagramAccessToken();
     if (!accountId || !accessToken) {
-      throw new InstagramPublishError("Meta Instagram configuration is missing.");
+      throw new InstagramPublishError("Meta Instagram configuration is missing.", { retrySafe: true });
     }
 
     const params = new URLSearchParams({
@@ -171,7 +195,7 @@ export class MetaGraphInstagramClient implements InstagramGraphClient {
     const accountId = env.metaInstagramAccountId();
     const accessToken = env.metaInstagramAccessToken();
     if (!accountId || !accessToken) {
-      throw new InstagramPublishError("Meta Instagram configuration is missing.");
+      throw new InstagramPublishError("Meta Instagram configuration is missing.", { retrySafe: true });
     }
 
     const params = new URLSearchParams({

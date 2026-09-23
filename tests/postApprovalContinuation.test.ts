@@ -171,7 +171,7 @@ describe("continueApprovedImagePost — happy path", () => {
     expect(h.fake.getAll("content_drafts")[0].status).toBe("approved"); // approval untouched
   });
 
-  it("confirming the finished-publication email ends at ready_to_publish — nothing is published", async () => {
+  it("confirmEmailAction itself only approves (ready_to_publish); publication is a separate route-scheduled step", async () => {
     const h = setup();
     await continueApprovedImagePost(h.deps, DRAFT_ID);
     const token = h.emailClient.sendCalls[0].text.match(/#t=([A-Za-z0-9_-]{43})/)![1];
@@ -366,7 +366,8 @@ describe("runContinuationSafely", () => {
 describe("structural guarantees", () => {
   it("the continuation path never imports or calls a social publisher", async () => {
     const { readFile } = await import("node:fs/promises");
-    for (const file of ["lib/agent/postApprovalContinuation.ts", "lib/agent/emailActions.ts", "lib/agent/emailReviewNotifications.ts", "app/api/email-actions/confirm/route.ts"]) {
+    // (The confirm route publishes only through lib/agent/postApprovalPublication.ts — see its own tests.)
+    for (const file of ["lib/agent/postApprovalContinuation.ts", "lib/agent/emailActions.ts", "lib/agent/emailReviewNotifications.ts"]) {
       const source = await readFile(file, "utf-8");
       expect(source).not.toMatch(/publishAssetTo|agent\/publish"|facebookClient|instagramClient/);
     }

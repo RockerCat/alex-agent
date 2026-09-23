@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { confirmEmailAction } from "@/lib/agent/emailActions";
 import { emailActionJson, readTokenFromRequest } from "@/lib/agent/emailActionHttp";
 import { runContinuationSafely } from "@/lib/agent/postApprovalContinuation";
+import { runAutoPublicationSafely } from "@/lib/agent/postApprovalPublication";
 
 // Public, POST-only: the explicit, user-confirmed decision. Delegates to
 // confirmEmailAction(), which calls the existing authoritative
@@ -15,8 +16,15 @@ import { runContinuationSafely } from "@/lib/agent/postApprovalContinuation";
 // lib/agent/postApprovalContinuation.ts) is scheduled with Next's after(),
 // so this response never waits on image generation or email delivery, and
 // a continuation failure can never undo the already-applied approval (the
-// cron catch-up sweep retries it). approve_asset / reject_draft schedule
-// nothing — in particular, nothing here publishes.
+// cron catch-up sweep retries it).
+//
+// When an approve_asset ("Aprobar publicación" — the FINAL human
+// authorization) is applied, automatic publication of that exact asset to
+// its draft's exact channel is scheduled the same way (see
+// lib/agent/postApprovalPublication.ts): the response never waits on
+// Meta, and a publication failure never revokes the approval (the cron
+// recovery sweep retries only provably-safe failures). reject_draft, and
+// any non-applied confirmation, schedule nothing.
 
 export async function POST(request: Request) {
   const token = await readTokenFromRequest(request);
@@ -26,6 +34,8 @@ export async function POST(request: Request) {
       onApplied: (applied) => {
         if (applied.action === "approve_draft") {
           after(() => runContinuationSafely(applied.subjectId));
+        } else if (applied.action === "approve_asset") {
+          after(() => runAutoPublicationSafely(applied.subjectId));
         }
       },
     });

@@ -306,7 +306,7 @@ describe("functional review actions (Phase 2B)", () => {
     expect(email.html).toContain("&quot;&gt;&lt;script&gt;");
   });
 
-  it("renders Aprobar publicación (single channel, no auto-publish) while keeping the inline CID image", () => {
+  it("renders Aprobar publicación (single channel; confirming publishes automatically) while keeping the inline CID image", () => {
     const image = { contentId: "solardesk-asset-v3", filename: "solardesk-asset-v3.png", contentType: "image/png", content: PNG };
     const email = renderAssetReviewEmail({ brandDisplayName: "SolarDesk", draft: draft(), asset: asset(), image, approveAssetUrl: APPROVE_ASSET });
     expect(email.html).toContain(`<a href="${APPROVE_ASSET}"`);
@@ -314,7 +314,7 @@ describe("functional review actions (Phase 2B)", () => {
     expect(email.html).not.toMatch(/>Aprobar imagen<\/a>/);
     expect(email.text).toContain(`Aprobar publicación: ${APPROVE_ASSET}`);
     expect(email.text).toContain('"Aprobar publicación" autoriza únicamente Instagram, con esta imagen y este texto exactos.');
-    expect(email.text).toContain("AlexAgent no publica automáticamente");
+    expect(email.text).toContain("Al confirmar, AlexAgent la publicará automáticamente en Instagram; no se pedirá otra aprobación.");
     expect(email.html).toContain('src="cid:solardesk-asset-v3"');
     expect(email.inlineAttachments).toEqual([image]);
     expect(email.html).not.toMatch(/>Rechazar/);

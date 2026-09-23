@@ -8,6 +8,7 @@ import { notifyAttentionIfNeeded } from "@/lib/agent/notifications";
 import { MetaGraphWhatsAppClient } from "@/lib/agent/whatsappClient";
 import { createProductionContinuationDeps, runPostApprovalContinuationSweep } from "@/lib/agent/postApprovalContinuation";
 import { createProductionContentReviewDeps, runContentReviewEmailSweep } from "@/lib/agent/contentReviewSweep";
+import { createProductionPublicationDeps, runPublicationRecoverySweep } from "@/lib/agent/postApprovalPublication";
 
 // Autonomy v1 Phase 1B — the authenticated headless entry point that lets
 // Vercel Cron (see vercel.json; not yet configured with a real
@@ -138,6 +139,24 @@ export async function GET(request: Request) {
       }
     } catch (sweepErr) {
       console.error("Post-approval continuation sweep failed:", sweepErr instanceof Error ? sweepErr.message : "unknown error");
+    }
+
+    // 4. Publication recovery: publishes assets that received an APPLIED
+    //    "Aprobar publicación" email authorization (exact asset version)
+    //    but whose post-response publication didn't complete. Only
+    //    provably-safe failures are retried; uncertain provider outcomes
+    //    and in-flight attempts are held for manual verification; dashboard-
+    //    approved assets are never touched. Same isolation as above.
+    try {
+      const publicationDeps = createProductionPublicationDeps();
+      if (publicationDeps) {
+        const sweep = await runPublicationRecoverySweep(publicationDeps);
+        if (sweep.outcomes.length > 0) {
+          console.log(`Publication recovery sweep: ${sweep.outcomes.join(", ")}`);
+        }
+      }
+    } catch (sweepErr) {
+      console.error("Publication recovery sweep failed:", sweepErr instanceof Error ? sweepErr.message : "unknown error");
     }
 
     return NextResponse.json({

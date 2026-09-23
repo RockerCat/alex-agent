@@ -32,6 +32,12 @@ export class ScriptedFacebookClient implements FacebookPageClient {
   }
 }
 
+/** An authoritative Meta rejection (4xx + Graph error): Meta provably did not create the post — retry-safe. */
 export function facebookRejection(message: string) {
+  return new FacebookPublishError(message, { retrySafe: true });
+}
+
+/** An uncertain outcome (network failure after sending, non-JSON/5xx, success without id): the post may exist. */
+export function facebookUncertainFailure(message = "Network error calling the Meta Graph API: socket hang up") {
   return new FacebookPublishError(message);
 }

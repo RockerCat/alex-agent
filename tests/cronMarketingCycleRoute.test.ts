@@ -10,13 +10,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // that exact function with the exact expected arguments, and translate
 // its result into a safe response.
 
-const { runMarketingCycleMock, notifyAttentionIfNeededMock, createContinuationDepsMock, runSweepMock, createContentReviewDepsMock, runContentReviewSweepMock } = vi.hoisted(() => ({
+const { runMarketingCycleMock, notifyAttentionIfNeededMock, createContinuationDepsMock, runSweepMock, createContentReviewDepsMock, runContentReviewSweepMock, createPublicationDepsMock, runPublicationSweepMock } = vi.hoisted(() => ({
   runMarketingCycleMock: vi.fn(),
   notifyAttentionIfNeededMock: vi.fn(),
   createContinuationDepsMock: vi.fn(),
   runSweepMock: vi.fn(),
   createContentReviewDepsMock: vi.fn(),
   runContentReviewSweepMock: vi.fn(),
+  createPublicationDepsMock: vi.fn(),
+  runPublicationSweepMock: vi.fn(),
+}));
+
+vi.mock("@/lib/agent/postApprovalPublication", () => ({
+  createProductionPublicationDeps: createPublicationDepsMock,
+  runPublicationRecoverySweep: runPublicationSweepMock,
 }));
 
 vi.mock("@/lib/agent/contentReviewSweep", () => ({
@@ -82,6 +89,10 @@ describe("GET /api/cron/marketing-cycle", () => {
     createContentReviewDepsMock.mockReturnValue(null);
     runContentReviewSweepMock.mockReset();
     runContentReviewSweepMock.mockResolvedValue({ outcomes: [] });
+    createPublicationDepsMock.mockReset();
+    createPublicationDepsMock.mockReturnValue(null);
+    runPublicationSweepMock.mockReset();
+    runPublicationSweepMock.mockResolvedValue({ outcomes: [] });
     process.env.CRON_SECRET = SECRET;
   });
 
@@ -374,6 +385,50 @@ describe("GET /api/cron/marketing-cycle", () => {
     await GET(getRequest("Bearer wrong-secret"));
     expect(createContentReviewDepsMock).not.toHaveBeenCalled();
     expect(runContentReviewSweepMock).not.toHaveBeenCalled();
+  });
+
+  it("27. runs the email-authorized publication recovery sweep last, after the continuation sweep", async () => {
+    const order: string[] = [];
+    runMarketingCycleMock.mockImplementation(async () => {
+      order.push("cycle");
+      return { run: { id: "run-1", status: "completed", decision: "NO_ACTION" } };
+    });
+    createContinuationDepsMock.mockReturnValue({ __fake: "deps" });
+    runSweepMock.mockImplementation(async () => {
+      order.push("continuation");
+      return { considered: 0, outcomes: [] };
+    });
+    createPublicationDepsMock.mockReturnValue({ __fake: "pubDeps" });
+    runPublicationSweepMock.mockImplementation(async () => {
+      order.push("publication");
+      return { outcomes: ["published"] };
+    });
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+
+    expect(response.status).toBe(200);
+    expect(runPublicationSweepMock).toHaveBeenCalledWith({ __fake: "pubDeps" });
+    expect(order.slice(-2)).toEqual(["continuation", "publication"]);
+    expect(runMarketingCycleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("28. a publication recovery failure never changes the cron response", async () => {
+    runMarketingCycleMock.mockResolvedValue({ run: { id: "run-1", status: "completed", decision: "NO_ACTION" } });
+    createPublicationDepsMock.mockReturnValue({ __fake: "pubDeps" });
+    runPublicationSweepMock.mockRejectedValue(new Error("meta exploded with internal details"));
+
+    const response = await GET(getRequest(`Bearer ${SECRET}`));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ ok: true, runId: "run-1", status: "completed", decision: "NO_ACTION", concurrent: false });
+  });
+
+  it("29. an authentication failure never runs publication recovery", async () => {
+    createPublicationDepsMock.mockReturnValue({ __fake: "pubDeps" });
+    await GET(getRequest("Bearer wrong-secret"));
+    expect(createPublicationDepsMock).not.toHaveBeenCalled();
+    expect(runPublicationSweepMock).not.toHaveBeenCalled();
   });
 
   it("20. an authentication failure never runs the sweep", async () => {

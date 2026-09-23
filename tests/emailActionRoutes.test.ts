@@ -5,12 +5,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // only: POST-only, bounded JSON body parsing, delegation, no-store/
 // no-referrer headers, and that errors never echo the token back.
 
-const { inspectMock, confirmMock, afterMock, runContinuationMock } = vi.hoisted(() => ({
+const { inspectMock, confirmMock, afterMock, runContinuationMock, runAutoPublicationMock } = vi.hoisted(() => ({
   inspectMock: vi.fn(),
   confirmMock: vi.fn(),
   afterMock: vi.fn(),
   runContinuationMock: vi.fn(),
+  runAutoPublicationMock: vi.fn(),
 }));
+
+vi.mock("@/lib/agent/postApprovalPublication", () => ({ runAutoPublicationSafely: runAutoPublicationMock }));
 
 vi.mock("@/lib/agent/emailActions", () => ({ inspectEmailAction: inspectMock, confirmEmailAction: confirmMock }));
 vi.mock("@/lib/agent/postApprovalContinuation", () => ({ runContinuationSafely: runContinuationMock }));
@@ -31,6 +34,7 @@ beforeEach(() => {
   confirmMock.mockReset();
   afterMock.mockReset();
   runContinuationMock.mockReset();
+  runAutoPublicationMock.mockReset();
 });
 
 describe("email action routes", () => {
@@ -75,14 +79,39 @@ describe("email action routes", () => {
     expect(JSON.stringify(await response.json())).not.toContain("draft-uuid");
   });
 
-  it("approve_asset and reject_draft schedule nothing (no continuation, no publishing)", async () => {
-    for (const action of ["approve_asset", "reject_draft"] as const) {
-      confirmMock.mockImplementationOnce(async (_db, _token, _now, options) => {
-        options.onApplied({ action, subjectType: action === "approve_asset" ? "content_asset" : "content_draft", subjectId: "x", subjectVersion: 1 });
-        return { result: "applied", context: {} };
-      });
-      await confirmRoute.POST(post(JSON.stringify({ token: TOKEN })));
-    }
+  it("an applied approve_asset schedules automatic publication of exactly that asset post-response — never inline", async () => {
+    confirmMock.mockImplementation(async (_db, _token, _now, options) => {
+      options.onApplied({ action: "approve_asset", subjectType: "content_asset", subjectId: "asset-uuid", subjectVersion: 3 });
+      return { result: "applied", context: {} };
+    });
+    runAutoPublicationMock.mockReturnValue(new Promise(() => {})); // Meta never answers: the response must still return
+
+    const response = await confirmRoute.POST(post(JSON.stringify({ token: TOKEN })));
+
+    expect(response.status).toBe(200);
+    expect(afterMock).toHaveBeenCalledTimes(1);
+    expect(runAutoPublicationMock).not.toHaveBeenCalled();
+    void afterMock.mock.calls[0][0]();
+    expect(runAutoPublicationMock).toHaveBeenCalledWith("asset-uuid");
+    expect(runContinuationMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(await response.json())).not.toContain("asset-uuid");
+  });
+
+  it("approve_draft never publishes, and reject_draft schedules nothing", async () => {
+    confirmMock.mockImplementationOnce(async (_db, _token, _now, options) => {
+      options.onApplied({ action: "approve_draft", subjectType: "content_draft", subjectId: "d", subjectVersion: 1 });
+      return { result: "applied", context: {} };
+    });
+    await confirmRoute.POST(post(JSON.stringify({ token: TOKEN })));
+    void afterMock.mock.calls[0][0]();
+    expect(runAutoPublicationMock).not.toHaveBeenCalled();
+
+    afterMock.mockReset();
+    confirmMock.mockImplementationOnce(async (_db, _token, _now, options) => {
+      options.onApplied({ action: "reject_draft", subjectType: "content_draft", subjectId: "d", subjectVersion: 1 });
+      return { result: "applied", context: {} };
+    });
+    await confirmRoute.POST(post(JSON.stringify({ token: TOKEN })));
     expect(afterMock).not.toHaveBeenCalled();
   });
 

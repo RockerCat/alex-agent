@@ -391,7 +391,7 @@ export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEm
         }
       : null;
 
-  const publicationNote = `"Aprobar publicación" autoriza únicamente ${channel}, con esta imagen y este texto exactos. En esta etapa AlexAgent no publica automáticamente: la pieza quedará lista para publicar.`;
+  const publicationNote = `"Aprobar publicación" autoriza únicamente ${channel}, con esta imagen y este texto exactos. Al confirmar, AlexAgent la publicará automáticamente en ${channel}; no se pedirá otra aprobación.`;
 
   const { html, text } = wrapDocument(title, intro, [
     destinationSection(draft),

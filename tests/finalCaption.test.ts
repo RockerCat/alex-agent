@@ -79,22 +79,27 @@ describe("one canonical composer everywhere", () => {
 });
 
 describe("publication-approval confirmation wording", () => {
-  it("states the exact single channel and that nothing is published automatically", async () => {
-    const { publicationApprovalScope } = await import("@/components/EmailActionConfirm");
-    const text = publicationApprovalScope({
-      action: "approve_asset",
+  it("states the exact single channel, that confirming publishes automatically, and never claims it is already published", async () => {
+    const { publicationApprovalScope, publicationApprovedMessage } = await import("@/components/EmailActionConfirm");
+    const context = {
+      action: "approve_asset" as const,
       brandDisplayName: "SolarDesk",
       title: "t",
       channel: "facebook",
       contentType: "image_post",
       contentVersion: 1,
       assetVersion: 1,
-    });
-    expect(text).toBe("Apruebas esta imagen y este texto exactos solo para Facebook. AlexAgent todavía no publica automáticamente: la pieza quedará lista para publicar.");
+    };
+    expect(publicationApprovalScope(context)).toBe(
+      "Apruebas esta imagen y este texto exactos solo para Facebook. Al confirmar, AlexAgent la publicará automáticamente en Facebook; no se pedirá otra aprobación."
+    );
+    expect(publicationApprovedMessage({ ...context, channel: "instagram" })).toBe("AlexAgent la publicará automáticamente en Instagram.");
+    expect(publicationApprovedMessage(context)).not.toMatch(/publicad[oa]\b/i);
     const { readFile } = await import("node:fs/promises");
     const source = await readFile("components/EmailActionConfirm.tsx", "utf-8");
     expect(source).toContain('question: "¿Aprobar esta publicación?"');
     expect(source).toContain('button: "Confirmar aprobación de la publicación"');
+    expect(source).toContain('done: "Publicación aprobada."');
     expect(source).not.toContain("¿Aprobar esta imagen?");
   });
 });

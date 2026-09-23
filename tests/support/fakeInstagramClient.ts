@@ -81,6 +81,12 @@ export class ScriptedInstagramClient implements InstagramGraphClient {
   }
 }
 
+/** An authoritative Meta rejection (4xx + Graph error): nothing was published — retry-safe. */
 export function instagramRejection(message: string) {
+  return new InstagramPublishError(message, { retrySafe: true });
+}
+
+/** An uncertain outcome (network failure after sending, non-JSON/5xx, success without id): the post may exist. */
+export function instagramUncertainFailure(message = "Network error calling the Meta Graph API: socket hang up") {
   return new InstagramPublishError(message);
 }

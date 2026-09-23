@@ -502,7 +502,7 @@ describe("publishAssetToInstagram", () => {
       expect(publication?.status).toBe("failed");
     });
 
-    it("20. a PUBLISHED status (already published by an earlier attempt) never calls media_publish again and fails conservatively", async () => {
+    it("20. a PUBLISHED status never calls media_publish again and is HELD as uncertain (never retryable), since a post may exist", async () => {
       const { fake, db, storage } = setup();
       const draft = seedDraft(fake, "draft-1");
       const asset = await seedReadyToPublishAsset(fake, db, storage, draft.id);
@@ -510,10 +510,14 @@ describe("publishAssetToInstagram", () => {
 
       const outcome = await publishAssetToInstagram({ db, storage, instagramClient, draftId: draft.id, assetId: asset.id, delay: noDelay });
 
-      expect(outcome.status).toBe("failed");
+      expect(outcome).toMatchObject({ status: "failed", providerOutcomeUncertain: true });
       expect(instagramClient.publishCalls).toHaveLength(0);
       const publication = await getPublication(db, asset.id, "instagram");
-      expect(publication?.status).toBe("failed");
+      expect(publication?.status).toBe("publishing"); // held — the claim logic never reclaims it
+      expect(publication?.error_message).toContain("never retried automatically");
+
+      const retry = await publishAssetToInstagram({ db, storage, instagramClient: new ScriptedInstagramClient(), draftId: draft.id, assetId: asset.id, delay: noDelay });
+      expect(retry.status).toBe("concurrent");
     });
 
     it("21. a container stuck IN_PROGRESS past the bounded attempt limit times out safely without ever publishing", async () => {
