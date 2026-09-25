@@ -913,3 +913,182 @@ describe("CTA label/destination contract and pre-render feasibility", () => {
     expect(secondRenderSpec?.ctaEmphasis).not.toBe(DEFAULT_RENDER_SPEC.ctaEmphasis);
   });
 });
+
+// History-aware visual diversity (real production finding, 2026-09-25):
+// the Visual Director now sees a compact deterministic history — including
+// legacy pre-Visual-Director assets — and code records objectively whether
+// the rendered result repeats it. Nothing here ever overrides the model's
+// strategy choice.
+describe("generateAsset — history-aware visual diversity", () => {
+  const originalEnv = { ...process.env };
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_IMAGE_MODEL = "gpt-image-1";
+  });
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const PDF = "brands/solardesk/assets/proposal-examples/propuesta-sistema-solar-residencial.pdf";
+  const PAGES = ["brands/solardesk/assets/proposal-examples/rendered/page-1.png", "brands/solardesk/assets/proposal-examples/rendered/page-2.png"];
+
+  /** The new draft plus a legacy (no visualPlan) proposal creative published on Facebook a week earlier — like the real Sep 16 piece. */
+  function setupWithPublishedLegacyProposal(draftOverrides: Partial<ContentDraftRow> = {}) {
+    const env = setupWithBudget();
+    const newDraft = seedDraft(env.fake, "draft-new", {
+      channel: "facebook",
+      topic: "Prepara tu primera propuesta solar sin tarjeta de crédito",
+      visual_direction: "Destacar la propuesta profesional gratuita mensual.",
+      ...draftOverrides,
+    });
+    const weekAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    env.fake.seed("content_drafts", [
+      newDraft,
+      { ...newDraft, id: "draft-legacy", topic: "De la cotización a una propuesta lista para presentar", status: "approved" },
+    ]);
+    env.fake.seed("content_assets", [
+      {
+        id: "asset-legacy",
+        draft_id: "draft-legacy",
+        brand: "solardesk",
+        asset_version: 6,
+        source_draft_version: 1,
+        status: "ready_to_publish",
+        format: "image_post",
+        storage_bucket: "solardesk-assets",
+        storage_path: "draft-legacy/v6.png",
+        render_provenance: { renderer: "svg-sharp-proposal-v1", theme: "b", screenshot: { selected: false }, proposalExample: { selected: true, pdfPath: PDF, pages: PAGES } },
+        created_at: weekAgo,
+      },
+    ]);
+    env.fake.seed("asset_publications", [
+      { id: "pub-legacy", asset_id: "asset-legacy", draft_id: "draft-legacy", brand: "solardesk", channel: "facebook", status: "published", published_at: weekAgo, created_at: weekAgo },
+    ]);
+    return env;
+  }
+  const planOf = (asset: { render_provenance: unknown }) => (asset.render_provenance as { visualPlan: Record<string, unknown> }).visualPlan;
+
+  it("10–11. the Visual Director sees the recent published proposal_document with its source, channel, status and age", async () => {
+    const { db, storage } = setupWithPublishedLegacyProposal();
+    const aiClient = new ScriptedAiClient([], [], [], [visualPlan({ varietyRationale: "Cambia a tipografía." })]);
+
+    await generateAsset({ db, storage, draftId: "draft-new", aiClient, imageGenerationClient: new ScriptedImageGenerationClient() });
+
+    const { systemPrompt, userPrompt } = aiClient.visualDirectorCalls[0];
+    expect(userPrompt).toContain("Channel: facebook");
+    expect(userPrompt).toMatch(
+      /8d ago · facebook · published · proposal_document \(inferred from renderer\) · layout=proposal theme=b · source=proposal:propuesta-sistema-solar-residencial#p1\+p2 · generatedImage=no · topic="De la cotización a una propuesta lista para presentar"/
+    );
+    expect(userPrompt).toMatch(/Latest published feed treatments \(newest first\): 8d ago facebook: proposal_document \/ proposal \/ proposal:propuesta-sistema-solar-residencial#p1\+p2/);
+    expect(systemPrompt).toMatch(/same strategy with the same source/);
+    expect(systemPrompt).toMatch(/Do not rotate strategies mechanically/);
+    expect(systemPrompt).toMatch(/Do not choose generated imagery merely for novelty/);
+    expect(systemPrompt).toMatch(/Always fill varietyRationale/);
+  });
+
+  it("13–14/17. repeating the recent proposal is legal and never overridden; code records the repetition independently of the model's prose", async () => {
+    const { db, storage } = setupWithPublishedLegacyProposal();
+    const aiClient = new ScriptedAiClient([], [], [], [
+      visualPlan({
+        strategy: "proposal_document",
+        verifiedSourceCategory: "proposal_example",
+        compositionIntent: "verified_dominant",
+        // Deliberately misleading prose: code must not trust it.
+        varietyRationale: "Tratamiento totalmente nuevo, nunca usado antes.",
+      }),
+    ]);
+    const imageClient = new ScriptedImageGenerationClient();
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-new", aiClient, imageGenerationClient: imageClient });
+
+    expect(outcome.status).toBe("success");
+    const plan = planOf(outcome.asset!);
+    expect(plan.strategy).toBe("proposal_document"); // not rotated away
+    expect(plan.varietyRationale).toBe("Tratamiento totalmente nuevo, nunca usado antes.");
+    expect(plan.varietyAssessment).toEqual({
+      repeatsRecentStrategy: true,
+      repeatsRecentSource: true,
+      repeatsLatestPublishedOnChannel: true,
+      sameStrategyCount: 1,
+      daysSinceStrategyLastUsed: 8,
+      comparedEntries: 1,
+    });
+    expect(imageClient.calls).toHaveLength(0);
+  });
+
+  it("12. generated_photo remains selectable, with a factual cost/budget hint, and records no repetition", async () => {
+    const { db, storage } = setupWithPublishedLegacyProposal();
+    const aiClient = new ScriptedAiClient([], [], [], [
+      visualPlan({
+        strategy: "generated_photo",
+        compositionIntent: "generated_dominant",
+        generativeSceneDescription: "Un instalador solar conversando con un cliente en su casa.",
+        varietyRationale: "Las piezas recientes fueron documento de propuesta; esta usa contexto humano.",
+      }),
+    ]);
+    const imageClient = new ScriptedImageGenerationClient();
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-new", aiClient, imageGenerationClient: imageClient });
+
+    expect(aiClient.visualDirectorCalls[0].systemPrompt).toMatch(
+      /Generative capability IS available this call \(approximately \$0\.026 per low-quality generation; the current AI budget leaves room for one generation this run\)/
+    );
+    expect(imageClient.calls).toHaveLength(1);
+    const plan = planOf(outcome.asset!);
+    expect(plan.strategy).toBe("generated_photo");
+    expect(plan.varietyAssessment).toMatchObject({ repeatsRecentStrategy: false, repeatsRecentSource: false, repeatsLatestPublishedOnChannel: false });
+  });
+
+  it("18. Budget Guard still decides: a generated choice under an exhausted budget makes no paid call, falls back, and records why", async () => {
+    const { fake, db, storage } = setupWithPublishedLegacyProposal();
+    fake.seed("ai_usage", [
+      { id: "u1", agent_run_id: null, brand: "solardesk", operation: "executor", model: "gpt-5.6-luna", input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, estimated_cost_usd: 9.49, created_at: new Date().toISOString() },
+    ]);
+    const aiClient = new ScriptedAiClient([], [], [], [
+      visualPlan({ strategy: "generated_photo", compositionIntent: "generated_dominant", generativeSceneDescription: "Escena solar.", varietyRationale: "Contexto humano." }),
+    ]);
+    const imageClient = new ScriptedImageGenerationClient();
+
+    const outcome = await generateAsset({ db, storage, draftId: "draft-new", aiClient, imageGenerationClient: imageClient });
+
+    expect(aiClient.visualDirectorCalls[0].systemPrompt).toMatch(/does NOT leave room for a generation this run/);
+    expect(imageClient.calls).toHaveLength(0);
+    const plan = planOf(outcome.asset!);
+    expect(plan).toMatchObject({ strategy: "branded_graphic", requestedStrategy: "generated_photo", degraded: true });
+    expect(plan.degradeReason).toMatch(/^Image generation budget blocked:/);
+    expect(plan.varietyAssessment).toMatchObject({ repeatsRecentStrategy: false }); // assessed on what was actually rendered
+  });
+
+  it("16/19. an old stored plan without varietyRationale still parses: Regenerate reuses it (never keyword fallback) with zero AI calls", async () => {
+    const { fake, db, storage } = setupWithPublishedLegacyProposal({ topic: "Consejos de instalación" }); // no proposal keywords
+    const oldPlan = visualPlan({ strategy: "branded_graphic", creativeConcept: "Plan persistido antes de varietyRationale." });
+    expect("varietyRationale" in oldPlan).toBe(false);
+    fake.seed("content_assets", [
+      ...fake.getAll("content_assets"),
+      {
+        id: "asset-old",
+        draft_id: "draft-new",
+        brand: "solardesk",
+        asset_version: 1,
+        source_draft_version: 1,
+        status: "pending_review",
+        format: "image_post",
+        storage_bucket: "solardesk-assets",
+        storage_path: "draft-new/v1.png",
+        render_provenance: { renderSpec: DEFAULT_RENDER_SPEC, renderer: "svg-sharp-v1", theme: "a", visualPlan: { ...oldPlan, origin: "visual_director", degraded: false, generatedImage: { used: false } } },
+        created_at: new Date().toISOString(),
+      },
+    ]);
+    const aiClient = new ScriptedAiClient([], [], [], []);
+    const imageClient = new ScriptedImageGenerationClient();
+
+    const regenerated = await generateAsset({ db, storage, draftId: "draft-new", aiClient, imageGenerationClient: imageClient });
+
+    expect(regenerated.status).toBe("success");
+    expect(aiClient.visualDirectorCalls).toHaveLength(0);
+    expect(imageClient.calls).toHaveLength(0);
+    const plan = planOf(regenerated.asset!);
+    expect(plan).toMatchObject({ origin: "reused_plan", strategy: "branded_graphic", creativeConcept: "Plan persistido antes de varietyRationale." });
+    expect(plan.varietyAssessment).toBeUndefined(); // only first-time Visual Director generations are assessed
+  });
+});

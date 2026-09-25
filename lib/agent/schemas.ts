@@ -264,9 +264,10 @@ export const VISUAL_PLAN_TEXT_LIMITS = {
   communicationGoal: 240,
   generativeSceneDescription: 500,
   rationale: 400,
+  varietyRationale: 300,
 } as const;
 
-export const visualCreativePlanSchema = z.object({
+const visualCreativePlanFields = {
   strategy: z.enum(VISUAL_STRATEGIES),
   /** Short human-readable (Spanish) description of the visual idea — instructional context, not marketing copy. */
   creativeConcept: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.creativeConcept),
@@ -289,5 +290,19 @@ export const visualCreativePlanSchema = z.object({
   renderSpec: assetRenderSpecSchema,
   /** Short explanation of why this strategy fits this specific draft. Persisted for auditability. */
   rationale: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.rationale),
-});
+};
+
+/** Short explanation of how the chosen treatment relates to the recent visual history the Visual Director was shown. Explanatory only — whether repetition objectively occurred is computed by code (lib/agent/visualHistory.ts assessVariety). */
+const varietyRationaleField = z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.varietyRationale);
+
+/**
+ * A VisualCreativePlan as stored/reused. varietyRationale is OPTIONAL
+ * here on purpose: plans persisted before it existed must keep parsing
+ * (getEffectiveVisualPlan → Regenerate/Request Changes reuse the stored
+ * plan), never silently degrading an old asset to keyword fallback.
+ */
+export const visualCreativePlanSchema = z.object({ ...visualCreativePlanFields, varietyRationale: varietyRationaleField.optional() });
 export type VisualCreativePlan = z.infer<typeof visualCreativePlanSchema>;
+
+/** The Visual Director's structured OUTPUT format: every new plan must explain its relation to recent history (strict structured outputs also require every field). */
+export const visualDirectorOutputSchema = z.object({ ...visualCreativePlanFields, varietyRationale: varietyRationaleField });

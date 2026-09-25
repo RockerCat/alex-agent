@@ -63,6 +63,17 @@ describe("Executor system prompt — Channel Content Rules v1", () => {
     expect(system).toMatch(/Visual Director/);
   });
 
+  it("gives neutral, varied visualDirection examples instead of steering every draft toward the proposal/interface", () => {
+    expect(system).not.toMatch(/Show the transition from a technical solar quotation to a professional proposal/);
+    expect(system).toMatch(/rather than defaulting to the same kind of visual every time/);
+    expect(system).toMatch(/human context matters more than software detail/); // human/contextual
+    expect(system).toMatch(/Show the real step in the product/); // product evidence
+    expect(system).toMatch(/no imagery needed/); // typographic
+    expect(system).toMatch(/Show the finished client-facing proposal/); // document evidence still legitimate
+    expect(system).toMatch(/don't default to generic solar-panel stock scenes/);
+    expect(system).toMatch(/Never ask for invented UI, metrics, customers or claims/);
+  });
+
   it("distinguishes the cta label from ctaUrl and forbids embedding a URL in the generated cta", () => {
     expect(system).toMatch(/`ctaUrl`.*is a separate, fixed destination/i);
     expect(system).toMatch(/must never append, restate, or otherwise embed `ctaUrl`/i);

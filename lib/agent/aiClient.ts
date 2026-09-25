@@ -6,7 +6,7 @@ import {
   plannerOutputSchema,
   executorOutputSchema,
   assetFeedbackInterpretationSchema,
-  visualCreativePlanSchema,
+  visualDirectorOutputSchema,
   type PlannerOutput,
   type ExecutorOutput,
   type AssetFeedbackInterpretation,
@@ -275,7 +275,7 @@ export class OpenAiClient implements AiClient {
         { role: "system", content: input.systemPrompt },
         { role: "user", content: input.userPrompt },
       ],
-      text: { format: zodTextFormat(visualCreativePlanSchema, "visual_creative_plan") },
+      text: { format: zodTextFormat(visualDirectorOutputSchema, "visual_creative_plan") },
     });
 
     const usage = usageFromResponse(response.usage);

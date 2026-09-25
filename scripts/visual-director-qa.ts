@@ -26,6 +26,7 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { OpenAiClient } from "@/lib/agent/aiClient";
 import { callVisualDirector, type VisualDirectorContext } from "@/lib/agent/visualDirector";
+import { emptyVisualHistory } from "@/lib/agent/visualHistory";
 import { resolveVisualSources } from "@/lib/agent/visualSourceResolver";
 import { buildGenerativeImagePrompt } from "@/lib/agent/generativePromptBuilder";
 import { OpenAiImageGenerationClient, imageGenerationCapabilityAvailable } from "@/lib/agent/imageGenerationClient";
@@ -105,9 +106,11 @@ async function main() {
     hook: draft.hook,
     ctaText: draft.ctaText,
     visualDirection: draft.visualDirection,
+    channel: "facebook",
     availableVerifiedSources,
     generativeCapabilityAvailable,
-    recentHistory: [], // no Supabase read for this manual QA — history is optional context, not required to exercise the Director
+    generativeBudget: { approxCostUsd: null, budgetPermits: true }, // manual QA: no budget read
+    recentHistory: emptyVisualHistory(), // no Supabase read for this manual QA — history is optional context, not required to exercise the Director
   };
 
   // --- Step 3: REAL Visual Director call (exactly once) ---

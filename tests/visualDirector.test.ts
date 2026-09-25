@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { buildVisualDirectorPrompt, type VisualDirectorContext } from "@/lib/agent/visualDirector";
-import { visualCreativePlanSchema, DEFAULT_RENDER_SPEC, VISUAL_STRATEGIES } from "@/lib/agent/schemas";
+import { visualCreativePlanSchema, visualDirectorOutputSchema, DEFAULT_RENDER_SPEC, VISUAL_STRATEGIES } from "@/lib/agent/schemas";
 import { visualPlan } from "@/tests/support/fakeAiClient";
+import { emptyVisualHistory } from "@/lib/agent/visualHistory";
 
 // AlexAgent v0.2 — Visual Director. Schema-level safety (structural, not
 // prompt-wording) and prompt-construction behavior. The interpretation/
@@ -17,8 +18,10 @@ function baseContext(overrides: Partial<VisualDirectorContext> = {}): VisualDire
     ctaText: "Comenzar gratis",
     visualDirection: "",
     availableVerifiedSources: "product_screenshot: ...\nproposal_example: ...",
+    channel: "facebook",
     generativeCapabilityAvailable: false,
-    recentHistory: [],
+    generativeBudget: { approxCostUsd: 0.02, budgetPermits: true },
+    recentHistory: emptyVisualHistory(),
     ...overrides,
   };
 }
@@ -108,16 +111,40 @@ describe("buildVisualDirectorPrompt", () => {
     expect(on.system).toMatch(/IS available/);
   });
 
-  it("9. includes bounded recent history in the user prompt without any full historical binary content", () => {
+  it("9. includes the compact recent history in the user prompt without any full historical binary content", () => {
     const { user } = buildVisualDirectorPrompt(
       baseContext({
-        recentHistory: [
-          { topic: "De la cotización a una propuesta lista para presentar", purpose: "activation", strategy: "proposal_document", creativeConcept: "Mostrar el PDF final." },
-        ],
+        recentHistory: {
+          windowDays: 45,
+          entries: [
+            {
+              daysAgo: 9,
+              channel: "facebook",
+              status: "published",
+              strategy: "proposal_document",
+              strategySource: "legacy_inferred",
+              layout: "proposal",
+              theme: "b",
+              sourceFingerprint: "proposal:propuesta-sistema-solar-residencial#p1+p2",
+              generatedImage: false,
+              topic: "De la cotización a una propuesta lista para presentar",
+              creativeConcept: null,
+            },
+          ],
+          summary: {
+            strategyCounts: { proposal_document: 1 },
+            sourceCounts: { "proposal:propuesta-sistema-solar-residencial#p1+p2": 1 },
+            daysSinceLastUse: { proposal_document: 9 },
+            recentPublished: [
+              { daysAgo: 9, channel: "facebook", strategy: "proposal_document", layout: "proposal", sourceFingerprint: "proposal:propuesta-sistema-solar-residencial#p1+p2", generatedImage: false },
+            ],
+          },
+        },
       })
     );
     expect(user).toMatch(/proposal_document/);
-    expect(user).toMatch(/Mostrar el PDF final\./);
+    expect(user).toMatch(/De la cotización a una propuesta lista para presentar/);
+    expect(user).not.toMatch(/https?:\/\/|storage_path|render_provenance/);
   });
 
   it("10. instructs the model not to reproduce the logo/UI/proposal via generative imagery", () => {
@@ -132,5 +159,54 @@ describe("buildVisualDirectorPrompt", () => {
     expect(user).toContain("Mi CTA aprobado");
     const { system } = buildVisualDirectorPrompt(baseContext());
     expect(system).toMatch(/never rewrite/i);
+  });
+});
+
+describe("varietyRationale — new output requires it, stored plans stay compatible", () => {
+  it("15. the Visual Director's output schema requires varietyRationale (bounded)", () => {
+    expect(visualDirectorOutputSchema.safeParse(visualPlan()).success).toBe(false);
+    expect(visualDirectorOutputSchema.safeParse(visualPlan({ varietyRationale: "Cambia respecto a las piezas recientes." })).success).toBe(true);
+    expect(visualDirectorOutputSchema.safeParse(visualPlan({ varietyRationale: "x".repeat(301) })).success).toBe(false);
+  });
+
+  it("16. a stored plan persisted before varietyRationale existed still parses unchanged", () => {
+    const parsed = visualCreativePlanSchema.safeParse(visualPlan());
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual(visualPlan());
+  });
+});
+
+describe("buildVisualDirectorPrompt — variety and generative guidance", () => {
+  it("presents every strategy family as legitimate, including generated photographic/lifestyle imagery for human-context posts", () => {
+    const { system } = buildVisualDirectorPrompt(baseContext({ generativeCapabilityAvailable: true }));
+    for (const strategy of VISUAL_STRATEGIES) expect(system).toContain(`- ${strategy}:`);
+    expect(system).toMatch(/Generated photographic imagery is appropriate for conceptual, benefit-oriented, audience-oriented or human-context posts/);
+    expect(system).toMatch(/do not default to generic solar-panel stock scenes/);
+  });
+
+  it("keeps relevance primary, explains feed repetition, allows justified repetition, and forbids mechanical rotation", () => {
+    const { system } = buildVisualDirectorPrompt(baseContext());
+    expect(system).toMatch(/Relevance to THIS approved draft is primary/);
+    expect(system).toMatch(/followers see consecutive pieces in the same feed/);
+    expect(system).toMatch(/Repetition is allowed when the content genuinely requires it/);
+    expect(system).toMatch(/Do not rotate strategies mechanically/);
+  });
+
+  it("gives a factual cost/budget hint only when generation is available, and names Budget Guard as the final authority", () => {
+    const permits = buildVisualDirectorPrompt(baseContext({ generativeCapabilityAvailable: true, generativeBudget: { approxCostUsd: 0.0198, budgetPermits: true } }));
+    expect(permits.system).toMatch(/approximately \$0\.020 per low-quality generation; the current AI budget leaves room/);
+    expect(permits.system).toMatch(/Budget Guard makes the final decision/);
+
+    const blocked = buildVisualDirectorPrompt(baseContext({ generativeCapabilityAvailable: true, generativeBudget: { approxCostUsd: 0.02, budgetPermits: false } }));
+    expect(blocked.system).toMatch(/does NOT leave room/);
+
+    const off = buildVisualDirectorPrompt(baseContext({ generativeCapabilityAvailable: false }));
+    expect(off.system).not.toMatch(/per low-quality generation/);
+  });
+
+  it("renders an empty history explicitly rather than omitting the section", () => {
+    const { user } = buildVisualDirectorPrompt(baseContext());
+    expect(user).toMatch(/=== Recent SolarDesk visual history \(last 45 days/);
+    expect(user).toMatch(/no SolarDesk visual history in this window yet/);
   });
 });

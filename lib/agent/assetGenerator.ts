@@ -21,7 +21,9 @@ import {
 import { buildGenerativeImagePrompt } from "@/lib/agent/generativePromptBuilder";
 import { callVisualDirector, estimateVisualDirectorInputTokens, type VisualDirectorContext } from "@/lib/agent/visualDirector";
 import { resolveVisualSources } from "@/lib/agent/visualSourceResolver";
-import { getRecentVisualStrategyHistory } from "@/lib/agent/visualHistory";
+import { assessVariety, describeAssetTreatment, getRecentVisualHistory, type RecentVisualHistory } from "@/lib/agent/visualHistory";
+import { preCallEstimateUsd } from "@/lib/agent/pricing";
+import { PER_RUN_AI_BUDGET_USD } from "@/lib/agent/constants";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
 import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
 import { BudgetGuard } from "@/lib/agent/budgetGuard";
@@ -266,6 +268,8 @@ async function renderAndPersist(params: {
   degraded: boolean;
   degradeReason?: string;
   origin: "visual_director" | "fallback" | "reused_plan";
+  /** First-time generation only: the history the Visual Director was shown, so the rendered result's repetition can be recorded deterministically. */
+  varietyHistory?: RecentVisualHistory;
 }): Promise<GenerateAssetOutcome> {
   const { db, storage, draft, nextVersion, strategy, screenshotMeta, proposalMeta, generatedImage, generatedImageInfo, degraded, degradeReason, origin } =
     params;
@@ -292,7 +296,7 @@ async function renderAndPersist(params: {
   // failure here silently lost the actually-attempted renderSpec, so a
   // subsequent Regenerate would fall back to DEFAULT_RENDER_SPEC instead
   // of reproducing what was really tried.
-  const planProvenance = {
+  const planProvenance: Record<string, unknown> = {
     renderSpec: plan.renderSpec,
     ...buildVisualPlanProvenance({ plan, strategy, origin, degraded, degradeReason, generatedImageInfo, draft }),
   };
@@ -320,6 +324,20 @@ async function renderAndPersist(params: {
   } catch (err) {
     const message = err instanceof AssetRenderError ? err.message : `Unexpected render error: ${err instanceof Error ? err.message : String(err)}`;
     return insertFailedAssetRow(db, draft, nextVersion, message, planProvenance);
+  }
+
+  // Code — not the model's varietyRationale — records whether what was
+  // actually rendered repeats recent history, using the exact same
+  // treatment/fingerprint derivation the history itself is built from.
+  // Informational only: it never changes the strategy.
+  if (params.varietyHistory) {
+    const treatment = describeAssetTreatment({ ...rendered.provenance, ...planProvenance });
+    if (treatment) {
+      planProvenance.visualPlan = {
+        ...(planProvenance.visualPlan as Record<string, unknown>),
+        varietyAssessment: assessVariety(treatment, draft.channel, params.varietyHistory),
+      };
+    }
   }
 
   const storagePath = `${draft.id}/v${nextVersion}.png`;
@@ -509,8 +527,13 @@ async function performFirstGeneration(params: {
 }): Promise<GenerateAssetOutcome> {
   const { db, storage, draft, nextVersion, aiClient, imageGenerationClient, budgetGuard, agentRunId } = params;
 
-  const history = await getRecentVisualStrategyHistory(db, draft.brand);
+  const history = await getRecentVisualHistory(db, draft.brand);
   const generativeCapabilityAvailable = imageGenerationCapabilityAvailable() && !!imageGenerationClient;
+  const imageModel = env.imageModel();
+  const imageEstimateUsd =
+    generativeCapabilityAvailable && imageModel
+      ? preCallEstimateUsd(imageModel, IMAGE_GENERATION_APPROX_INPUT_TOKENS, IMAGE_GENERATION_APPROX_OUTPUT_TOKENS)
+      : null;
 
   const context: VisualDirectorContext = {
     topic: draft.topic,
@@ -519,10 +542,23 @@ async function performFirstGeneration(params: {
     hook: draft.hook!,
     ctaText: resolveCtaLabelAndUrl(draft).label,
     visualDirection: draft.visual_direction ?? "",
+    channel: draft.channel,
     availableVerifiedSources: AVAILABLE_VERIFIED_SOURCES_SUMMARY,
     generativeCapabilityAvailable,
+    generativeBudget: { approxCostUsd: imageEstimateUsd, budgetPermits: false },
     recentHistory: history,
   };
+
+  // Factual budget hint for the Visual Director (does this run's budget
+  // leave room for the director call AND one image?). Informational only:
+  // the Budget Guard check right before the paid image call below stays
+  // the sole authority.
+  if (imageEstimateUsd !== null) {
+    const snapshot = await budgetGuard.getSnapshot();
+    const needed = preCallEstimateUsd(env.executorModel(), estimateVisualDirectorInputTokens(context), 900) + imageEstimateUsd;
+    context.generativeBudget.budgetPermits =
+      snapshot.monthlySpentUsd + needed <= snapshot.effectiveStopUsd && needed <= Math.min(snapshot.perRunBudgetUsd, PER_RUN_AI_BUDGET_USD);
+  }
 
   const budgetCheck = await budgetGuard.checkBeforeCall({
     agentRunId,
@@ -638,6 +674,7 @@ async function performFirstGeneration(params: {
     degraded: finalDegraded,
     degradeReason: finalDegradeReason,
     origin,
+    varietyHistory: history,
   });
 }
 
