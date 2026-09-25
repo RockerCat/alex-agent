@@ -316,6 +316,14 @@ export const visualDirectorOutputSchema = z.object({ ...visualCreativePlanFields
 // and the generated-slide cap are enforced by application code
 // (lib/agent/carouselPlan.ts), never trusted from the model.
 // ---------------------------------------------------------------------
+/**
+ * Bounded, verified views of the real proposal example (lib/agent/proposalExamples.ts):
+ * "overview" = page 1 main with page 2 behind (the original treatment);
+ * "financial_detail" / "system_detail" = hand-verified sections of page 2.
+ */
+export const PROPOSAL_FOCUS_VIEWS = ["overview", "financial_detail", "system_detail"] as const;
+export type ProposalFocusView = (typeof PROPOSAL_FOCUS_VIEWS)[number];
+
 export const CAROUSEL_SLIDE_STRATEGIES = [
   "branded_graphic",
   "product_ui",
@@ -330,13 +338,34 @@ export const CAROUSEL_MAX_GENERATED_SLIDES = 2;
 /** Meta's documented carousel ceiling; the draft validator's own 3–6 range is stricter. */
 export const CAROUSEL_MAX_SLIDES = 10;
 
-export const carouselSlidePlanSchema = z.object({
+const carouselSlidePlanBaseFields = {
   slideNumber: z.number().int().min(1).max(CAROUSEL_MAX_SLIDES),
   strategy: z.enum(CAROUSEL_SLIDE_STRATEGIES),
   verifiedSourceCategory: z.enum(VERIFIED_SOURCE_CATEGORIES),
   compositionIntent: z.enum(COMPOSITION_INTENTS),
   /** Scene/style only, for generated_photo/generated_illustration slides; null otherwise. */
   generativeSceneDescription: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.generativeSceneDescription).nullable(),
+};
+/** Which verified proposal view a proposal_document slide shows; null/absent = "overview" (the original stack). */
+const proposalFocusField = z.enum(PROPOSAL_FOCUS_VIEWS).nullable();
+/** When this slide deliberately repeats an earlier slide's exact visual treatment, that slide's number (see repetitionJustification). */
+const intentionalRepeatOfField = z.number().int().min(1).max(CAROUSEL_MAX_SLIDES).nullable();
+/** Revision only: reuse the already-generated source image of this slide number from the previous carousel version. */
+const reuseGeneratedFromSlideField = z.number().int().min(1).max(CAROUSEL_MAX_SLIDES).nullable();
+/** Short reason for any intentional identical treatment that remains in the carousel; null when there is none. */
+const repetitionJustificationField = z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.varietyRationale).nullable();
+
+/**
+ * A carousel slide plan as stored/reused. The fields added by carousel
+ * visual revision v1 are OPTIONAL here so carousel plans stored before
+ * them (e.g. the first production carousel v1) keep parsing unchanged —
+ * a missing proposalFocus means "overview", the only view that existed.
+ */
+export const carouselSlidePlanSchema = z.object({
+  ...carouselSlidePlanBaseFields,
+  proposalFocus: proposalFocusField.optional(),
+  intentionalRepeatOf: intentionalRepeatOfField.optional(),
+  reuseGeneratedFromSlide: reuseGeneratedFromSlideField.optional(),
 });
 export type CarouselSlidePlan = z.infer<typeof carouselSlidePlanSchema>;
 
@@ -345,12 +374,42 @@ const carouselPlanFields = {
   communicationGoal: visualCreativePlanFields.communicationGoal,
   renderSpec: visualCreativePlanFields.renderSpec,
   rationale: visualCreativePlanFields.rationale,
-  slidePlans: z.array(carouselSlidePlanSchema).min(1).max(CAROUSEL_MAX_SLIDES),
 };
 
-/** A carousel plan as stored/reused (varietyRationale optional, same posture as visualCreativePlanSchema). */
-export const carouselVisualPlanSchema = z.object({ ...carouselPlanFields, varietyRationale: varietyRationaleField.optional() });
+/** A carousel plan as stored/reused (varietyRationale and the revision-v1 fields optional, same posture as visualCreativePlanSchema). */
+export const carouselVisualPlanSchema = z.object({
+  ...carouselPlanFields,
+  slidePlans: z.array(carouselSlidePlanSchema).min(1).max(CAROUSEL_MAX_SLIDES),
+  varietyRationale: varietyRationaleField.optional(),
+  repetitionJustification: repetitionJustificationField.optional(),
+});
 export type CarouselVisualPlan = z.infer<typeof carouselVisualPlanSchema>;
 
-/** The carousel Visual Director's structured OUTPUT format (every field required). */
-export const carouselVisualDirectorOutputSchema = z.object({ ...carouselPlanFields, varietyRationale: varietyRationaleField });
+/** The carousel Visual Director's structured OUTPUT format for a first generation (every field required; nullable where optional in meaning). */
+export const carouselVisualDirectorOutputSchema = z.object({
+  ...carouselPlanFields,
+  slidePlans: z
+    .array(z.object({ ...carouselSlidePlanBaseFields, proposalFocus: proposalFocusField, intentionalRepeatOf: intentionalRepeatOfField }))
+    .min(1)
+    .max(CAROUSEL_MAX_SLIDES),
+  varietyRationale: varietyRationaleField,
+  repetitionJustification: repetitionJustificationField,
+});
+
+/** The carousel VISUAL REVISION output: the same plan plus per-slide generated-source reuse. It has no field capable of carrying slide text, caption, CTA or hashtags. */
+export const carouselVisualRevisionOutputSchema = z.object({
+  ...carouselPlanFields,
+  slidePlans: z
+    .array(
+      z.object({
+        ...carouselSlidePlanBaseFields,
+        proposalFocus: proposalFocusField,
+        intentionalRepeatOf: intentionalRepeatOfField,
+        reuseGeneratedFromSlide: reuseGeneratedFromSlideField,
+      })
+    )
+    .min(1)
+    .max(CAROUSEL_MAX_SLIDES),
+  varietyRationale: varietyRationaleField,
+  repetitionJustification: repetitionJustificationField,
+});

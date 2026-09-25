@@ -11,6 +11,7 @@ import { requestRevision } from "@/lib/agent/revision";
 import { answerQuestion } from "@/lib/agent/questions";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { requestAssetChanges } from "@/lib/agent/assetRevision";
+import { requestCarouselVisualRevision } from "@/lib/agent/carouselRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import { runRegeneratedAssetReviewSafely } from "@/lib/agent/postApprovalContinuation";
 import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
@@ -169,6 +170,26 @@ export async function requestAssetChangesAction(draftId: string, feedback: strin
   const result = await requestAssetChanges({ db, storage, aiClient, draftId, feedback });
   revalidatePath(`/approvals/${draftId}`);
   return result;
+}
+
+// Carousel visual revision v1 (manual-only): a critique on a carousel
+// that is still pending review creates the next carousel version with a
+// revised VISUAL plan — approved content never changes, at most 2 Visual
+// Director calls, zero image calls (reuse-only). The new version's review
+// email goes out post-response through the same canonical continuation
+// as Regenerate; the previous version's approval link becomes stale via
+// the existing version guards.
+export async function requestCarouselVisualRevisionAction(draftId: string, critique: string) {
+  await assertAuthorized();
+  const db = supabaseAdmin();
+  const storage = new SupabaseAssetStorage(db);
+  const aiClient = new OpenAiClient();
+  const result = await requestCarouselVisualRevision({ db, storage, aiClient, draftId, critique });
+  revalidatePath(`/approvals/${draftId}`);
+  if (result.status === "success") {
+    after(() => runRegeneratedAssetReviewSafely(draftId));
+  }
+  return { status: result.status, message: result.message, assetVersion: result.asset?.asset_version ?? null };
 }
 
 // Manual-only, Facebook-only (AlexAgent v0.2 checkpoint 1): exists

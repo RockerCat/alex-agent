@@ -36,6 +36,8 @@ import {
   carouselPlanShapeError,
   dominantStrategy,
   fallbackCarouselPlan,
+  findRepeatedTreatments,
+  slideTreatmentSignature,
   planCarouselSlides,
   type ApprovedCarouselSlide,
   type PlannedCarouselSlide,
@@ -95,18 +97,28 @@ interface CarouselProduction {
   draft: ContentDraftRow;
   nextVersion: number;
   plan: CarouselVisualPlan;
-  origin: "visual_director" | "fallback" | "reused_plan";
+  origin: CarouselPlanOrigin;
   fallbackReason?: string;
   slides: PlannedCarouselSlide[];
   sources: Map<number, SlideImageSource>;
   varietyHistory?: RecentVisualHistory;
+  /** Extra durable fields merged into visualPlan provenance (e.g. carousel visual revision details). */
+  extraPlanProvenance?: Record<string, unknown>;
 }
 
-function slideProvenance(slide: PlannedCarouselSlide, source: SlideImageSource | undefined, rendered?: Record<string, unknown>) {
+export type CarouselPlanOrigin = "visual_director" | "fallback" | "reused_plan" | "revision";
+
+/** The cached generated source a slide composites (reused or newly generated), if any. */
+const sourcePathOf = (source: SlideImageSource | undefined) => (source?.info.used ? (source.info.storagePath ?? null) : null);
+
+function slideProvenance(slide: PlannedCarouselSlide, source: SlideImageSource | undefined, spec: CarouselVisualPlan["renderSpec"], rendered?: Record<string, unknown>) {
   return {
     position: slide.position,
     requestedStrategy: slide.requestedStrategy,
     strategy: slide.strategy,
+    ...(slide.proposalFocus ? { proposalFocus: slide.proposalFocus } : {}),
+    // Only a REUSED generated source can make two slides identical; a newly generated image is unique.
+    treatmentSignature: slideTreatmentSignature(slide, spec, source?.info.reused ? sourcePathOf(source) : null),
     degradeReasons: slide.degradeReasons,
     generatedImage: source?.info ?? { used: false },
     ...(rendered ? { rendered } : {}),
@@ -116,6 +128,12 @@ function slideProvenance(slide: PlannedCarouselSlide, source: SlideImageSource |
 function carouselProvenance(p: CarouselProduction, perSlide: ReturnType<typeof slideProvenance>[]): Record<string, unknown> {
   const strategies = p.slides.map((s) => s.strategy);
   const degraded = p.origin === "fallback" || p.slides.some((s) => s.degradeReasons.length > 0);
+  const reused = new Map<number, string>();
+  for (const s of p.slides) {
+    const source = p.sources.get(s.position);
+    const path = source?.info.reused ? sourcePathOf(source) : null;
+    if (path) reused.set(s.position, path);
+  }
   return {
     renderer: CAROUSEL_RENDERER,
     theme: p.nextVersion % 2 === 1 ? "a" : "b",
@@ -131,6 +149,9 @@ function carouselProvenance(p: CarouselProduction, perSlide: ReturnType<typeof s
       degradeReason: p.fallbackReason,
       draftContext: { topic: p.draft.topic, purpose: p.draft.purpose },
       generatedImage: { used: perSlide.some((s) => s.generatedImage.used) },
+      // Deterministic record of slides that show the identical visual treatment (and whether that was declared intentional).
+      intraCarouselRepeats: findRepeatedTreatments(p.slides, p.plan.renderSpec, p.plan.repetitionJustification, reused),
+      ...(p.extraPlanProvenance ?? {}),
     },
   };
 }
@@ -173,7 +194,7 @@ async function renderAndPersistCarousel(p: CarouselProduction): Promise<Generate
   const { db, storage, draft, nextVersion, plan, slides, sources } = p;
   const { label: ctaLabel } = resolveCtaLabelAndUrl(draft);
   const feasibility = resolveFeasibleCtaEmphasis(ctaLabel, plan.renderSpec.ctaEmphasis);
-  const plannedProvenance = () => carouselProvenance(p, slides.map((s) => slideProvenance(s, sources.get(s.position))));
+  const plannedProvenance = () => carouselProvenance(p, slides.map((s) => slideProvenance(s, sources.get(s.position), plan.renderSpec)));
   if (!feasibility.fits) {
     return insertFailedCarousel(p, `The approved CTA label "${ctaLabel}" does not fit within any supported CTA emphasis level and cannot be rendered safely. Shorten the CTA label.`, plannedProvenance());
   }
@@ -194,6 +215,7 @@ async function renderAndPersistCarousel(p: CarouselProduction): Promise<Generate
         strategy: slide.strategy,
         forceScreenshotMeta: slide.screenshotMeta,
         forceProposalMeta: slide.proposalMeta,
+        proposalFocus: slide.proposalFocus ?? undefined,
         generatedImage: sources.get(slide.position)?.buffer ?? null,
       });
       const withMarker = await addSlideMarker(result.png, slide.position, slides.length);
@@ -218,7 +240,7 @@ async function renderAndPersistCarousel(p: CarouselProduction): Promise<Generate
 
   const provenance = carouselProvenance(
     p,
-    rendered.map((r) => slideProvenance(r.slide, sources.get(r.slide.position), r.provenance))
+    rendered.map((r) => slideProvenance(r.slide, sources.get(r.slide.position), plan.renderSpec, r.provenance))
   );
   if (p.varietyHistory) {
     const treatment = describeAssetTreatment(provenance);
@@ -254,7 +276,15 @@ async function renderAndPersistCarousel(p: CarouselProduction): Promise<Generate
 }
 
 function downgrade(slide: PlannedCarouselSlide, reason: string): PlannedCarouselSlide {
-  return { ...slide, strategy: "branded_graphic", screenshotMeta: null, proposalMeta: null, needsGeneratedImage: false, degradeReasons: [...slide.degradeReasons, reason] };
+  return {
+    ...slide,
+    strategy: "branded_graphic",
+    screenshotMeta: null,
+    proposalMeta: null,
+    proposalFocus: null,
+    needsGeneratedImage: false,
+    degradeReasons: [...slide.degradeReasons, reason],
+  };
 }
 
 /**
@@ -401,7 +431,7 @@ export async function performCarouselFirstGeneration(params: FirstGenerationPara
     origin = "fallback";
   }
 
-  return produce({
+  return produceCarousel({
     db,
     storage,
     draft,
@@ -423,21 +453,24 @@ interface PaidGeneration {
   imageGenerationClient?: ImageGenerationClient;
 }
 
-async function produce(params: {
+export async function produceCarousel(params: {
   db: SupabaseClient<Database>;
   storage: AssetStorage;
   draft: ContentDraftRow;
   nextVersion: number;
   approved: ApprovedCarouselSlide[];
   plan: CarouselVisualPlan;
-  origin: "visual_director" | "fallback" | "reused_plan";
+  origin: CarouselPlanOrigin;
   fallbackReason?: string;
   generativeCapabilityAvailable: boolean;
   varietyHistory?: RecentVisualHistory;
-  /** position → previously cached generated source path (Regenerate). */
+  /** position → previously cached generated source path (Regenerate, or an accepted revision reuse). */
   cache: Map<number, string>;
   /** Present ONLY for first generation. Absent → the image provider is structurally unreachable. */
   paid?: PaidGeneration;
+  /** Why a generated slide without a reusable cached source is downgraded when `paid` is absent. */
+  noCacheReason?: string;
+  extraPlanProvenance?: Record<string, unknown>;
 }): Promise<GenerateAssetOutcome> {
   const { db, storage, draft, nextVersion, approved, plan, origin, fallbackReason, cache } = params;
   const planning = planCarouselSlides(plan, approved, draftSelectionInput(draft), { generativeCapabilityAvailable: params.generativeCapabilityAvailable });
@@ -470,11 +503,25 @@ async function produce(params: {
     for (const [position, source] of generated.sources) sources.set(position, source);
   } else {
     slides = slides.map((s) =>
-      s.needsGeneratedImage ? downgrade(s, "No cached generated image available to reuse — this path never calls the image provider.") : s
+      s.needsGeneratedImage
+        ? downgrade(s, params.noCacheReason ?? "No cached generated image available to reuse — this path never calls the image provider.")
+        : s
     );
   }
 
-  return renderAndPersistCarousel({ db, storage, draft, nextVersion, plan, origin, fallbackReason, slides, sources, varietyHistory: params.varietyHistory });
+  return renderAndPersistCarousel({
+    db,
+    storage,
+    draft,
+    nextVersion,
+    plan,
+    origin,
+    fallbackReason,
+    slides,
+    sources,
+    varietyHistory: params.varietyHistory,
+    extraPlanProvenance: params.extraPlanProvenance,
+  });
 }
 
 /** Stored carousel plan of a previous version (null for none/malformed), plus its cached generated sources by slide position. */
@@ -506,7 +553,7 @@ export async function regenerateCarouselFromPrevious(params: {
   if (!approved) return { status: "ineligible", message: "The approved carousel does not have a clean ordered set of slide texts." };
   const { plan: stored, cache } = storedCarouselPlan(params.previousAsset);
   const usable = stored && !carouselPlanShapeError(stored, approved.length) ? stored : null;
-  return produce({
+  return produceCarousel({
     db: params.db,
     storage: params.storage,
     draft: params.draft,
@@ -529,7 +576,7 @@ export async function generateCarouselWithoutAi(params: {
 }): Promise<GenerateAssetOutcome> {
   const approved = approvedCarouselSlides(params.draft);
   if (!approved) return { status: "ineligible", message: "The approved carousel does not have a clean ordered set of slide texts." };
-  return produce({
+  return produceCarousel({
     ...params,
     approved,
     plan: fallbackCarouselPlan(approved.length),

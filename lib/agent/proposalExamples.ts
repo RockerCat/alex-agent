@@ -66,6 +66,40 @@ export const PROPOSAL_EXAMPLE: ProposalExampleMeta = {
   requiresFictitiousLabel: true,
 };
 
+/** A hand-verified pixel region of one rendered page (in that page's own 2481x3508 pixel space). */
+export interface ProposalFocusRegion {
+  /** Index into PROPOSAL_EXAMPLE.pages. */
+  pageIndex: 0 | 1;
+  region: { x: number; y: number; width: number; height: number };
+  /** What is visibly shown — verified by direct inspection of the rendered page. */
+  description: string;
+}
+
+/**
+ * Focused views of the real proposal (carousel visual variety without
+ * any new or fabricated material). Each region was verified by direct
+ * inspection of page-2.png: it starts above its section heading, ends
+ * below the section's last element (footnote / card), spans the page's
+ * full content width (x 183–2296) with ~30–40px of real page margin, and
+ * never cuts through a table, chart or text line. "overview" is the
+ * original page-1-over-page-2 stack and needs no region.
+ */
+export const PROPOSAL_FOCUS_REGIONS: Record<"financial_detail" | "system_detail", ProposalFocusRegion> = {
+  financial_detail: {
+    pageIndex: 1,
+    // "Análisis financiero" heading (y≈260) through the payback footnote (ends y≈1936); blank band until y≈2115.
+    region: { x: 150, y: 225, width: 2180, height: 1750 },
+    description:
+      "Financial analysis: investment breakdown table, savings projection, 5-year accumulated savings bars and payback bars (example figures).",
+  },
+  system_detail: {
+    pageIndex: 1,
+    // "Diseño del sistema" heading (y≈2115) through the equipment card (ends y≈3096).
+    region: { x: 150, y: 2080, width: 2180, height: 1050 },
+    description: "System design: system power (kWp), panel count, required area, monthly production and equipment (example figures).",
+  },
+};
+
 // Signals that the brief wants the actual client-facing deliverable —
 // the finished proposal/PDF a customer would see — rather than the
 // internal tool used to manage/list proposals.

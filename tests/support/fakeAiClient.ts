@@ -74,6 +74,9 @@ export class ScriptedAiClient implements AiClient {
   ) {}
 
   carouselVisualDirectorCalls: VisualDirectorCallInput[] = [];
+  /** Scripted carousel VISUAL REVISION outputs (consumed one per call; the last repeats). */
+  carouselRevisionQueue: CarouselVisualPlan[] = [];
+  carouselRevisionCalls: VisualDirectorCallInput[] = [];
   /** When > 0, the next runCarouselVisualDirector call throws (technical failure). */
   failNextCarouselVisualDirectorCalls = 0;
 
@@ -145,6 +148,15 @@ export class ScriptedAiClient implements AiClient {
     const model = "test-executor-model";
     const output = this.carouselVisualDirectorQueue.length > 1 ? this.carouselVisualDirectorQueue.shift()! : this.carouselVisualDirectorQueue[0];
     if (!output) throw new Error("ScriptedAiClient: no carousel visual director output queued");
+    return { output, usage, model };
+  }
+
+  async runCarouselVisualRevision(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult> {
+    this.carouselRevisionCalls.push(input);
+    const usage = { inputTokens: 1200, cachedInputTokens: 0, outputTokens: 600 };
+    const model = "test-executor-model";
+    const output = this.carouselRevisionQueue.length > 1 ? this.carouselRevisionQueue.shift()! : this.carouselRevisionQueue[0];
+    if (!output) throw new Error("ScriptedAiClient: no carousel revision output queued");
     return { output, usage, model };
   }
 }

@@ -314,6 +314,24 @@ export function renderContentReviewEmail(input: ContentReviewEmailInput): Render
 const isCarouselAsset = (asset: ContentAssetRow) => asset.format === "carousel";
 
 /**
+ * Deterministic intra-carousel findings (lib/agent/carouselPlan.ts)
+ * that the Visual Director did not declare intentional: slides showing
+ * the identical visual treatment. Surfaced to the human reviewer; never
+ * model reasoning.
+ */
+function unresolvedRepeatWarnings(asset: ContentAssetRow): string[] {
+  const visualPlan = (asset.render_provenance as { visualPlan?: { intraCarouselRepeats?: unknown } } | null)?.visualPlan;
+  const repeats = Array.isArray(visualPlan?.intraCarouselRepeats) ? (visualPlan!.intraCarouselRepeats as { slides?: unknown; justified?: unknown }[]) : [];
+  return repeats
+    .filter((r) => r.justified !== true && Array.isArray(r.slides) && r.slides.length > 1)
+    .map((r) => {
+      const slides = (r.slides as number[]).map(String);
+      const list = slides.length === 2 ? `${slides[0]} y ${slides[1]}` : `${slides.slice(0, -1).join(", ")} y ${slides.at(-1)}`;
+      return `Las diapositivas ${list} muestran el mismo tratamiento visual (misma fuente y composición).`;
+    });
+}
+
+/**
  * Every slide of a carousel asset, in publication order: "Diapositiva
  * i/N", the exact image, and the approved text drawn on it (plus the CTA
  * button on the last slide). One section — the carousel is approved once.
@@ -327,6 +345,10 @@ function carouselSlidesSection(input: AssetReviewEmailInput): Section {
   const { label: ctaLabel } = resolveCtaLabelAndUrl(draft);
   const html: string[] = [`<h2 style="font-size:16px;margin:24px 0 8px">Carrusel (${total} imágenes, en el orden en que se publicarán)</h2>`];
   const text: string[] = [`== Carrusel (${total} imágenes, en el orden en que se publicarán) ==`];
+  for (const warning of unresolvedRepeatWarnings(asset)) {
+    html.push(`<p style="font-size:13px;color:#a33;margin:8px 0">${escapeHtml(warning)}</p>`);
+    text.push(`ATENCIÓN: ${warning}`);
+  }
   records.forEach((record, i) => {
     const heading = `Diapositiva ${record.position}/${total}`;
     const slideText = texts.get(record.position) ?? "";

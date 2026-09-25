@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { DraftActions } from "@/components/DraftActions";
 import { AssetPanel } from "@/components/AssetPanel";
+import { CarouselRevisionForm } from "@/components/CarouselRevisionForm";
+import { carouselRevisionIneligibilityReason } from "@/lib/agent/carouselRevision";
 import { listAssets } from "@/lib/agent/assetGenerator";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import { getPublication } from "@/lib/agent/publish";
@@ -60,6 +62,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
     ? await Promise.all((latestCarousel.slides ?? []).map((slide) => carouselStorage.createSignedUrl(slide.storage_path, 3600)))
     : [];
   const carouselPublication = latestCarousel ? await getPublication(db, latestCarousel.id, draft.channel) : null;
+  const canReviseCarousel = isCarousel && latestCarousel !== null && (await carouselRevisionIneligibilityReason(db, draft)) === null;
 
   return (
     <div className="space-y-4">
@@ -169,8 +172,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
         <Card>
           <h2 className="font-medium mb-1">Carousel</h2>
           <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-            Carousel review, approval and publication run through email. Regenerate and Request Changes are not available for carousels in
-            the dashboard yet.
+            Carousel review, approval and publication run through email. Deterministic Regenerate isn&apos;t offered for carousels (it would
+            reproduce the same plan); use a visual revision below instead.
           </p>
           {!latestCarousel ? (
             <p className="text-sm">No carousel images generated yet.</p>
@@ -198,6 +201,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
                   </figure>
                 ))}
               </div>
+              {canReviseCarousel && <CarouselRevisionForm draftId={draft.id} currentVersion={latestCarousel.asset_version} />}
             </div>
           )}
         </Card>

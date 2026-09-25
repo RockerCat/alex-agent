@@ -3,7 +3,9 @@ import {
   CAROUSEL_MAX_GENERATED_SLIDES,
   CAROUSEL_MAX_SLIDES,
   DEFAULT_RENDER_SPEC,
+  type AssetRenderSpec,
   type CarouselSlidePlan,
+  type ProposalFocusView,
   type CarouselVisualPlan,
   type VisualCreativePlan,
   type VisualStrategy,
@@ -11,7 +13,8 @@ import {
 import { resolveVisualSources, type DraftSelectionInput } from "@/lib/agent/visualSourceResolver";
 import { slideTextFitsStrategy } from "@/lib/agent/assetRenderer";
 import type { ScreenshotMeta } from "@/lib/agent/productScreenshots";
-import type { ProposalExampleMeta } from "@/lib/agent/proposalExamples";
+import { PROPOSAL_FOCUS_REGIONS, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
+import { proposalSourceFingerprint, screenshotSourceFingerprint } from "@/lib/agent/visualHistory";
 
 // Instagram carousel v1 — pure, deterministic planning. The carousel
 // Visual Director proposes ONE carousel-level plan with ordered
@@ -98,6 +101,10 @@ export interface PlannedCarouselSlide {
   slidePlan: VisualCreativePlan;
   screenshotMeta: ScreenshotMeta | null;
   proposalMeta: ProposalExampleMeta | null;
+  /** The verified proposal view this slide shows — set only while the final strategy is proposal_document ("overview" when the plan didn't say). */
+  proposalFocus: ProposalFocusView | null;
+  /** The earlier slide this one deliberately repeats, as declared by the Visual Director. */
+  intentionalRepeatOf: number | null;
   needsGeneratedImage: boolean;
   degradeReasons: string[];
 }
@@ -110,6 +117,7 @@ function toBranded(slide: PlannedCarouselSlide, reason: string): PlannedCarousel
     strategy: "branded_graphic",
     screenshotMeta: null,
     proposalMeta: null,
+    proposalFocus: null,
     needsGeneratedImage: false,
     degradeReasons: [...slide.degradeReasons, reason],
   };
@@ -147,6 +155,8 @@ export function planCarouselSlides(
       slidePlan: slideAsVisualPlan(plan, slidePlan),
       screenshotMeta: null,
       proposalMeta: null,
+      proposalFocus: null,
+      intentionalRepeatOf: slidePlan.intentionalRepeatOf ?? null,
       needsGeneratedImage: false,
       degradeReasons: [],
     };
@@ -159,7 +169,13 @@ export function planCarouselSlides(
 
     if (!isGenerated(slide.strategy)) {
       const resolved = resolveVisualSources({ ...slide.slidePlan, strategy: slide.strategy }, selection, false);
-      slide = { ...slide, strategy: resolved.strategy, screenshotMeta: resolved.screenshotMeta, proposalMeta: resolved.proposalMeta };
+      slide = {
+        ...slide,
+        strategy: resolved.strategy,
+        screenshotMeta: resolved.screenshotMeta,
+        proposalMeta: resolved.proposalMeta,
+        proposalFocus: resolved.strategy === "proposal_document" ? (slidePlan.proposalFocus ?? "overview") : null,
+      };
       if (resolved.degraded && resolved.degradeReason) slide.degradeReasons = [...slide.degradeReasons, resolved.degradeReason];
     }
 
@@ -190,4 +206,81 @@ export function dominantStrategy(strategies: VisualStrategy[]): VisualStrategy {
   let best = strategies[0];
   for (const s of strategies) if ((counts.get(s) ?? 0) > (counts.get(best) ?? 0)) best = s;
   return best;
+}
+
+// ---------------------------------------------------------------------
+// Intra-carousel treatment signatures (carousel visual revision v1).
+// Structured metadata only — no image similarity. Two slides "request
+// the same visual treatment" when they would show the same real visual
+// material through the same layout: the same strategy + layout + source
+// view (a verified proposal view or screenshot), or the same reused
+// generated image. Repeating a strategy, or even the same document
+// through a DIFFERENT verified view, is not a finding. Sourceless
+// typographic slides are never findings: their approved text IS their
+// visual content.
+// ---------------------------------------------------------------------
+
+const LAYOUT_BY_STRATEGY: Record<string, string> = {
+  branded_graphic: "text_only",
+  product_ui: "product",
+  proposal_document: "proposal",
+  generated_photo: "hero",
+  generated_illustration: "hero",
+  hybrid: "hero",
+};
+
+/**
+ * The slide's treatment signature, or null when it shows no reusable
+ * visual material (typography only, or a newly generated image that is
+ * unique by construction). `reusedSourcePath` is the cached generated
+ * source this slide will composite, if any.
+ */
+export function slideTreatmentSignature(slide: PlannedCarouselSlide, spec: AssetRenderSpec, reusedSourcePath?: string | null): string | null {
+  const layout = LAYOUT_BY_STRATEGY[slide.strategy] ?? slide.strategy;
+  if (slide.strategy === "proposal_document" && slide.proposalMeta) {
+    const view = slide.proposalFocus ?? "overview";
+    const pages =
+      view === "overview"
+        ? (spec.secondaryPageVisibility === "hidden" ? slide.proposalMeta.pages.slice(0, 1) : slide.proposalMeta.pages).map((p) => p.file)
+        : [slide.proposalMeta.pages[PROPOSAL_FOCUS_REGIONS[view].pageIndex].file];
+    return `${slide.strategy}|${layout}|${proposalSourceFingerprint(slide.proposalMeta.pdfPath, pages, view)}`;
+  }
+  if (slide.strategy === "product_ui" && slide.screenshotMeta) {
+    return `${slide.strategy}|${layout}|${screenshotSourceFingerprint(slide.screenshotMeta.file)}`;
+  }
+  if ((slide.strategy === "generated_photo" || slide.strategy === "generated_illustration") && reusedSourcePath) {
+    return `${slide.strategy}|${layout}|generated:${reusedSourcePath}`;
+  }
+  return null;
+}
+
+export interface RepeatedTreatmentFinding {
+  /** Slide positions (ascending) that request the identical treatment. */
+  slides: number[];
+  signature: string;
+  /** True only when every later slide declares intentionalRepeatOf an earlier one in the group AND the plan gives a repetitionJustification. */
+  justified: boolean;
+}
+
+/** Groups of ≥2 slides with the same treatment signature (see slideTreatmentSignature). Deterministic, slide order. */
+export function findRepeatedTreatments(
+  slides: PlannedCarouselSlide[],
+  spec: AssetRenderSpec,
+  repetitionJustification: string | null | undefined,
+  reusedSources: Map<number, string> = new Map()
+): RepeatedTreatmentFinding[] {
+  const groups = new Map<string, PlannedCarouselSlide[]>();
+  for (const slide of slides) {
+    const signature = slideTreatmentSignature(slide, spec, reusedSources.get(slide.position));
+    if (!signature) continue;
+    groups.set(signature, [...(groups.get(signature) ?? []), slide]);
+  }
+  const hasJustification = !!repetitionJustification && repetitionJustification.trim().length > 0;
+  return [...groups.entries()]
+    .filter(([, members]) => members.length > 1)
+    .map(([signature, members]) => {
+      const positions = members.map((m) => m.position);
+      const declared = members.slice(1).every((m) => m.intentionalRepeatOf !== null && positions.includes(m.intentionalRepeatOf) && m.intentionalRepeatOf < m.position);
+      return { slides: positions, signature, justified: hasJustification && declared };
+    });
 }

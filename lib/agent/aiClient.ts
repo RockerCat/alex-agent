@@ -8,6 +8,7 @@ import {
   assetFeedbackInterpretationSchema,
   visualDirectorOutputSchema,
   carouselVisualDirectorOutputSchema,
+  carouselVisualRevisionOutputSchema,
   type CarouselVisualPlan,
   type PlannerOutput,
   type ExecutorOutput,
@@ -106,6 +107,7 @@ export interface AiClient {
   runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult>;
   runVisualDirector(input: VisualDirectorCallInput): Promise<VisualDirectorCallResult>;
   runCarouselVisualDirector(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult>;
+  runCarouselVisualRevision(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult>;
 }
 
 // Generous headroom above what EXECUTOR_TEXT_LIMITS (lib/agent/schemas.ts)
@@ -315,6 +317,18 @@ export class OpenAiClient implements AiClient {
   }
 
   async runCarouselVisualDirector(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult> {
+    return this.runCarouselPlanCall(input, "carousel_visual_plan", carouselVisualDirectorOutputSchema);
+  }
+
+  async runCarouselVisualRevision(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult> {
+    return this.runCarouselPlanCall(input, "carousel_visual_revision", carouselVisualRevisionOutputSchema);
+  }
+
+  private async runCarouselPlanCall(
+    input: VisualDirectorCallInput,
+    formatName: string,
+    schema: typeof carouselVisualDirectorOutputSchema | typeof carouselVisualRevisionOutputSchema
+  ): Promise<CarouselVisualDirectorCallResult> {
     // Identical configuration to runVisualDirector — only the bounded
     // output schema differs (carousel-level plan + ordered slidePlans).
     const model = env.executorModel();
@@ -325,7 +339,7 @@ export class OpenAiClient implements AiClient {
         { role: "system", content: input.systemPrompt },
         { role: "user", content: input.userPrompt },
       ],
-      text: { format: zodTextFormat(carouselVisualDirectorOutputSchema, "carousel_visual_plan") },
+      text: { format: zodTextFormat(schema, formatName) },
     });
 
     const usage = usageFromResponse(response.usage);

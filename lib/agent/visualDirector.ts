@@ -37,6 +37,8 @@ export interface VisualDirectorContext {
   generativeCapabilityAvailable: boolean;
   /** Only meaningful when generativeCapabilityAvailable. */
   generativeBudget: GenerativeBudgetHint;
+  /** Carousel visual revision v1: generated imagery may only be reused, never newly generated. */
+  generativeReuseOnly?: boolean;
   /** Compact deterministic history (see visualHistory.ts) — never raw provenance, URLs or binaries. */
   recentHistory: RecentVisualHistory;
 }
@@ -104,6 +106,9 @@ function formatHistory(history: RecentVisualHistory): string {
 }
 
 function generativeLine(context: VisualDirectorContext): string {
+  if (context.generativeReuseOnly) {
+    return "Generated imagery is REUSE-ONLY this call: a generated_photo/generated_illustration slide is possible only by reusing a previously generated image (reuseGeneratedFromSlide); no new image will be generated, and a generated slide without a reusable image is rendered as branded_graphic.";
+  }
   if (!context.generativeCapabilityAvailable) {
     return "Generative capability is NOT available this call — you must choose product_ui, proposal_document, or branded_graphic only. Never choose generated_photo, generated_illustration, or hybrid.";
   }
@@ -162,7 +167,21 @@ const CAROUSEL_GUIDANCE = [
   "- Per-slide strategies available in a carousel: branded_graphic, product_ui, proposal_document, generated_photo, generated_illustration. hybrid is NOT available inside a carousel.",
   "- Each slide's approved text is drawn on that slide exactly as written; the CTA button appears only on the last slide. You never add, remove, merge or reorder slides.",
   "- Set generativeSceneDescription only for generated_photo/generated_illustration slides (scene/style only, same rules as above); null for every other slide.",
+  "Within the carousel:",
+  "- Repeating a strategy is allowed when editorially useful, and repeated real evidence (e.g. the proposal) can be useful.",
+  "- But two slides with the same strategy, the same source and the same view/composition read as duplicate creative. When you repeat proposal evidence, prefer a distinct verified proposal view (proposalFocus) that supports that slide's approved text — never force a view the text doesn't call for.",
+  "- Relevance over novelty; no mechanical rotation.",
+  "- If you deliberately keep an identical treatment on two slides, set intentionalRepeatOf on the later slide to the earlier slide's number and explain it in repetitionJustification; otherwise leave both null.",
+  "- proposalFocus applies only to proposal_document slides (null for every other slide).",
 ];
+
+/** The verified proposal views a proposal_document slide can show (lib/agent/proposalExamples.ts). */
+const PROPOSAL_VIEW_GUIDANCE = [
+  "Verified proposal views (proposalFocus, proposal_document slides only):",
+  "- overview: the proposal's cover page as the main document, with the detail page behind it — the finished deliverable as a whole.",
+  "- financial_detail: the real financial-analysis section — investment breakdown, savings projection, accumulated-savings and payback charts (example figures).",
+  "- system_detail: the real system-design section — system power, panel count, area, monthly production and equipment (example figures).",
+].join("\n");
 
 export function buildCarouselVisualDirectorPrompt(context: CarouselVisualDirectorContext): { system: string; user: string } {
   const system = [
@@ -172,11 +191,18 @@ export function buildCarouselVisualDirectorPrompt(context: CarouselVisualDirecto
     STRATEGY_GUIDANCE,
     ...CAROUSEL_GUIDANCE,
     `- At most ${context.maxGeneratedSlides} slides may use generated imagery (generated_photo/generated_illustration); any beyond that are rendered as branded_graphic instead. Generated imagery is never required.`,
+    PROPOSAL_VIEW_GUIDANCE,
     VARIETY_GUIDANCE,
     generativeLine(context),
   ].join("\n");
 
-  const user = [
+  const user = carouselDraftSection(context);
+  return { system, user };
+}
+
+/** The approved content + sources + history block shared by the first-generation and revision carousel prompts. */
+function carouselDraftSection(context: CarouselVisualDirectorContext): string {
+  return [
     "=== Approved carousel draft ===",
     `Channel: ${context.channel}`,
     `Topic: ${context.topic}`,
@@ -195,8 +221,81 @@ export function buildCarouselVisualDirectorPrompt(context: CarouselVisualDirecto
     `=== Recent SolarDesk visual history (last ${context.recentHistory.windowDays} days, one line per post, newest first) ===`,
     formatHistory(context.recentHistory),
   ].join("\n");
+}
 
+/** One slide of the carousel version being revised, as it was actually rendered. */
+export interface PreviousCarouselSlide {
+  slideNumber: number;
+  strategy: string;
+  proposalFocus: string | null;
+  /** Canonical source identity actually shown (e.g. "proposal:…#p1+p2", "screenshot:04.png", "generated", "none"). */
+  source: string;
+  /** True when this slide's generated source image is cached and can be reused by reuseGeneratedFromSlide. */
+  generatedImageAvailable: boolean;
+  generativeSceneDescription: string | null;
+}
+
+export interface CarouselRevisionContext extends CarouselVisualDirectorContext {
+  previousVersion: number;
+  previousConcept: string;
+  previousSlides: PreviousCarouselSlide[];
+  /** Deterministic findings on the previous version (plain sentences). */
+  previousFindings: string[];
+  critique: string;
+  /** Set only for the single corrective pass: the exact finding(s) still present in the first revised plan. */
+  correctiveFindings?: string[];
+}
+
+const REVISION_GUIDANCE = [
+  "This is a VISUAL REVISION of an already-rendered carousel whose content is approved and frozen.",
+  "- Revise ONLY the visual plan. The approved slide texts, their order, the caption, the CTA and the hashtags cannot change — your output has no field for them.",
+  "- Address the human critique. Keep treatments that worked (the previous plan and slide list are below) unless the critique or a finding requires changing them.",
+  "- To keep a slide's existing generated image, set reuseGeneratedFromSlide to the previous slide number whose image you are keeping, keep the same generated strategy, and keep its scene description. Only slides marked \"generated image available\" can be reused.",
+  "- This revision cannot create new generated images: a generated slide that doesn't reuse an available image will be rendered as branded_graphic instead. Never ask for new imagery merely for variety.",
+  "- Use the verified proposal views to make repeated proposal evidence materially distinct where the approved text supports it.",
+];
+
+export function buildCarouselRevisionPrompt(context: CarouselRevisionContext): { system: string; user: string } {
+  const base = buildCarouselVisualDirectorPrompt(context);
+  const system = [base.system, ...REVISION_GUIDANCE].join("\n");
+  const previous = context.previousSlides.map(
+    (sl) =>
+      `${sl.slideNumber}. ${sl.strategy}${sl.proposalFocus ? ` · view=${sl.proposalFocus}` : ""} · source=${sl.source}` +
+      (sl.generatedImageAvailable ? " · generated image available" : "") +
+      (sl.generativeSceneDescription ? ` · scene="${sl.generativeSceneDescription}"` : "")
+  );
+  const user = [
+    carouselDraftSection(context),
+    "",
+    `=== Previous carousel version v${context.previousVersion} (as rendered) ===`,
+    `Concept: ${context.previousConcept}`,
+    ...previous,
+    "",
+    "=== Deterministic findings on the previous version ===",
+    ...(context.previousFindings.length > 0 ? context.previousFindings : ["(none)"]),
+    "",
+    "=== Human critique (visual direction only) ===",
+    context.critique,
+    ...(context.correctiveFindings && context.correctiveFindings.length > 0
+      ? [
+          "",
+          "=== Your previous revised plan still has these identical treatments ===",
+          ...context.correctiveFindings,
+          "Resolve them with a materially different treatment/view, or — only if the repetition is genuinely necessary — mark it with intentionalRepeatOf and repetitionJustification.",
+        ]
+      : []),
+  ].join("\n");
   return { system, user };
+}
+
+export function estimateCarouselRevisionInputTokens(context: CarouselRevisionContext): number {
+  const { system, user } = buildCarouselRevisionPrompt(context);
+  return Math.ceil((system.length + user.length) / 4) + 50;
+}
+
+export async function callCarouselVisualRevision(aiClient: AiClient, context: CarouselRevisionContext): Promise<CarouselVisualDirectorCallResult> {
+  const { system, user } = buildCarouselRevisionPrompt(context);
+  return aiClient.runCarouselVisualRevision({ systemPrompt: system, userPrompt: user });
 }
 
 export function estimateCarouselVisualDirectorInputTokens(context: CarouselVisualDirectorContext): number {

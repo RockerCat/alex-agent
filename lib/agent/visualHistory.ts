@@ -124,20 +124,40 @@ function pageLabel(pagePath: string): string {
  * the same real proposal pages or screenshot always yield the same string.
  * Built only from catalog file names in provenance, never a URL.
  */
+/**
+ * THE canonical fingerprint of a real proposal view (used by visual
+ * history and by carousel treatment signatures alike). The original
+ * overview keeps its page-based form ("…#p1+p2", or "…#p1" when page 2
+ * is hidden) so it stays comparable with every asset rendered before
+ * focused views existed; a focused view adds its name
+ * ("…#p2@financial_detail"), so the three views never look like the
+ * same source treatment.
+ */
+export function proposalSourceFingerprint(pdfPath: string, pageFiles: string[], view?: string | null): string {
+  const doc = baseName(pdfPath).replace(/\.pdf$/i, "");
+  const focused = view && view !== "overview" ? `@${view}` : "";
+  return `proposal:${doc}#${pageFiles.map(pageLabel).join("+")}${focused}`;
+}
+
+/** THE canonical fingerprint of a real product screenshot. */
+export function screenshotSourceFingerprint(file: string): string {
+  return `screenshot:${baseName(file)}`;
+}
+
 function verifiedSourceFingerprint(provenance: Provenance, layout: VisualLayout): string | null {
   const proposal = asRecord(provenance.proposalExample);
   if (proposal?.selected === true && typeof proposal.pdfPath === "string" && Array.isArray(proposal.pages)) {
     let pages = proposal.pages.filter((p): p is string => typeof p === "string");
+    const view = typeof proposal.view === "string" ? proposal.view : null;
     // The standard proposal layout records both pages even when the
     // second one is hidden — fingerprint only what was actually shown.
     const spec = asRecord(provenance.renderSpec);
-    if (layout === "proposal" && spec?.secondaryPageVisibility === "hidden") pages = pages.slice(0, 1);
-    const doc = baseName(proposal.pdfPath).replace(/\.pdf$/i, "");
-    return `proposal:${doc}#${pages.map(pageLabel).join("+")}`;
+    if (layout === "proposal" && !view && spec?.secondaryPageVisibility === "hidden") pages = pages.slice(0, 1);
+    return proposalSourceFingerprint(proposal.pdfPath, pages, view);
   }
   const screenshot = asRecord(provenance.screenshot);
   if (screenshot?.selected === true && typeof screenshot.file === "string") {
-    return `screenshot:${baseName(screenshot.file)}`;
+    return screenshotSourceFingerprint(screenshot.file);
   }
   return null;
 }

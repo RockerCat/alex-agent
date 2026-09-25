@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
-import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
-import { DEFAULT_RENDER_SPEC, type AssetRenderSpec, type VisualStrategy } from "@/lib/agent/schemas";
+import { selectProposalExample, PROPOSAL_FOCUS_REGIONS, type ProposalExampleMeta, type ProposalFocusRegion } from "@/lib/agent/proposalExamples";
+import { DEFAULT_RENDER_SPEC, type AssetRenderSpec, type ProposalFocusView, type VisualStrategy } from "@/lib/agent/schemas";
 import { BUNDLED_FONT_NAME, measureText, outlineText, TextOutlineError, type OutlinedTextOptions } from "@/lib/agent/textOutline";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
@@ -352,6 +352,8 @@ export interface RenderAssetInput {
   strategy?: VisualStrategy;
   forceScreenshotMeta?: ScreenshotMeta | null;
   forceProposalMeta?: ProposalExampleMeta | null;
+  /** Which verified view of the proposal to show (proposal layout only). Absent or "overview" = the original page-1-over-page-2 stack, byte-for-byte. */
+  proposalFocus?: ProposalFocusView;
   /** Resolved generated image bytes for generated_photo/generated_illustration/hybrid strategies. Required (non-null) for those strategies — never fabricated by this function if absent (throws AssetRenderError instead). */
   generatedImage?: Buffer | null;
 }
@@ -440,7 +442,13 @@ interface PageCard {
  * rounds corners, the same allowed evidence-safe operations used for
  * product screenshots.
  */
-async function preparePageCard(pageFile: string, displayWidth: number, radius: number, cropHeight?: number): Promise<PageCard> {
+async function preparePageCard(
+  pageFile: string,
+  displayWidth: number,
+  radius: number,
+  cropHeight?: number,
+  region?: ProposalFocusRegion["region"]
+): Promise<PageCard> {
   const filePath = path.join(process.cwd(), PROPOSAL_RENDERED_DIR, pageFile);
   const raw = await readFile(filePath);
   const meta = await sharp(raw).metadata();
@@ -448,13 +456,26 @@ async function preparePageCard(pageFile: string, displayWidth: number, radius: n
     throw new AssetRenderError(`Could not read dimensions for proposal page asset: ${pageFile}`);
   }
 
-  const sourceHeight = cropHeight && cropHeight > 0 && cropHeight <= meta.height ? cropHeight : meta.height;
-  const source =
-    sourceHeight === meta.height
-      ? raw
-      : await sharp(raw).extract({ left: 0, top: 0, width: meta.width, height: sourceHeight }).png().toBuffer();
+  let source: Buffer;
+  let sourceWidth = meta.width;
+  let sourceHeight: number;
+  if (region) {
+    // A verified focus region (PROPOSAL_FOCUS_REGIONS) — must lie fully inside the page.
+    if (region.x < 0 || region.y < 0 || region.x + region.width > meta.width || region.y + region.height > meta.height) {
+      throw new AssetRenderError(`Proposal focus region is outside the page bounds: ${pageFile}`);
+    }
+    source = await sharp(raw).extract({ left: region.x, top: region.y, width: region.width, height: region.height }).png().toBuffer();
+    sourceWidth = region.width;
+    sourceHeight = region.height;
+  } else {
+    sourceHeight = cropHeight && cropHeight > 0 && cropHeight <= meta.height ? cropHeight : meta.height;
+    source =
+      sourceHeight === meta.height
+        ? raw
+        : await sharp(raw).extract({ left: 0, top: 0, width: meta.width, height: sourceHeight }).png().toBuffer();
+  }
 
-  const displayHeight = Math.round((displayWidth / meta.width) * sourceHeight);
+  const displayHeight = Math.round((displayWidth / sourceWidth) * sourceHeight);
   const resized = await sharp(source).resize({ width: displayWidth, height: displayHeight, fit: "cover" }).png().toBuffer();
 
   const roundedMaskSvg = `<svg width="${displayWidth}" height="${displayHeight}"><rect x="0" y="0" width="${displayWidth}" height="${displayHeight}" rx="${radius}" ry="${radius}" fill="#fff"/></svg>`;
@@ -523,6 +544,30 @@ async function prepareProposalStack(meta: ProposalExampleMeta, spec: AssetRender
 }
 
 /**
+ * A single verified section of a real proposal page as the dominant
+ * visual (financial_detail / system_detail), framed exactly like the
+ * overview stack's front page (same mat, shadow and disclosure line),
+ * as large as fits the same stack area and centered within it. Only
+ * ever crops the hand-verified PROPOSAL_FOCUS_REGIONS — never redraws.
+ */
+async function prepareFocusedProposalCard(
+  meta: ProposalExampleMeta,
+  focus: Exclude<ProposalFocusView, "overview">,
+  spec: AssetRenderSpec
+): Promise<ProposalStack> {
+  const { pageIndex, region } = PROPOSAL_FOCUS_REGIONS[focus];
+  const page = meta.pages[pageIndex];
+  const top = PROPOSAL_STACK_TOP_Y_BY_SCALE[spec.primaryVisualScale];
+  const availableHeight = PROPOSAL_STACK_BOTTOM_MAX_Y - top;
+  const maxWidth = CONTENT_WIDTH - PROPOSAL_FRAME_MARGIN * 2;
+  const width = Math.min(maxWidth, Math.round(availableHeight * (region.width / region.height)));
+  const card = await preparePageCard(page.file, width, PROPOSAL_PAGE_RADIUS, undefined, region);
+  const x = Math.round((IMAGE_POST_WIDTH - card.width) / 2);
+  const y = top + Math.round((availableHeight - card.height) / 2);
+  return { page1: card, page2: null, page1X: x, page1Y: y, page2X: x, page2Y: y };
+}
+
+/**
  * Pure rendering function — no DB, no storage, no network. Given the
  * approved draft's own hook (headline) and CTA text, produces a
  * 1080x1350 branded PNG. Throws AssetRenderError (never returns a
@@ -564,10 +609,11 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     : input.forceProposalMeta !== undefined
       ? input.forceProposalMeta
       : selectProposalExample(selectionInput);
+  const focusedView = input.proposalFocus && input.proposalFocus !== "overview" ? input.proposalFocus : null;
   let proposalStack: ProposalStack | null = null;
   if (proposalMeta) {
     try {
-      proposalStack = await prepareProposalStack(proposalMeta, spec);
+      proposalStack = focusedView ? await prepareFocusedProposalCard(proposalMeta, focusedView, spec) : await prepareProposalStack(proposalMeta, spec);
     } catch {
       // Fail safely: never fabricate a proposal. Fall back to the screenshot/text-only path.
       proposalStack = null;
@@ -736,12 +782,21 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
           }
         : { selected: false },
       proposalExample: proposalMeta
-        ? {
-            selected: usesProposalLayout,
-            pdfPath: proposalMeta.pdfPath,
-            pages: proposalMeta.pages.map((p) => `${PROPOSAL_RENDERED_DIR}/${p.file}`),
-            disclosureText: PROPOSAL_DISCLOSURE_TEXT,
-          }
+        ? focusedView
+          ? {
+              selected: usesProposalLayout,
+              pdfPath: proposalMeta.pdfPath,
+              pages: [`${PROPOSAL_RENDERED_DIR}/${proposalMeta.pages[PROPOSAL_FOCUS_REGIONS[focusedView].pageIndex].file}`],
+              view: focusedView,
+              region: PROPOSAL_FOCUS_REGIONS[focusedView].region,
+              disclosureText: PROPOSAL_DISCLOSURE_TEXT,
+            }
+          : {
+              selected: usesProposalLayout,
+              pdfPath: proposalMeta.pdfPath,
+              pages: proposalMeta.pages.map((p) => `${PROPOSAL_RENDERED_DIR}/${p.file}`),
+              disclosureText: PROPOSAL_DISCLOSURE_TEXT,
+            }
         : { selected: false },
     },
   };
