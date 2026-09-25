@@ -28,7 +28,7 @@ const TOPIC_MAX_CHARS = 100;
 const CONCEPT_MAX_CHARS = 140;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type VisualLayout = "text_only" | "product" | "proposal" | "hero";
+export type VisualLayout = "text_only" | "product" | "proposal" | "hero" | "carousel";
 export type VisualStrategySource = "visual_director" | "reused_plan" | "fallback" | "legacy_inferred";
 export type VisualHistoryStatus = "published" | "ready_to_publish" | "pending_review" | "rejected";
 
@@ -152,6 +152,7 @@ function verifiedSourceFingerprint(provenance: Provenance, layout: VisualLayout)
 export function describeAssetTreatment(provenanceValue: unknown): AssetTreatment | null {
   const provenance = asRecord(provenanceValue);
   if (!provenance) return null;
+  if (provenance.renderer === CAROUSEL_RENDERER) return describeCarouselTreatment(provenance);
   const layout = typeof provenance.renderer === "string" ? RENDERER_LAYOUTS[provenance.renderer] : undefined;
   if (!layout) return null;
 
@@ -187,10 +188,58 @@ export function describeAssetTreatment(provenanceValue: unknown): AssetTreatment
   };
 }
 
-/** True for fingerprints that identify reusable real material (a repeat means the same pixels). */
-export function isVerifiedSourceFingerprint(fingerprint: string): boolean {
-  return fingerprint !== "none" && fingerprint !== "generated";
+const CAROUSEL_RENDERER = "svg-sharp-carousel-v1"; // lib/agent/carouselGenerator.ts
+const CAROUSEL_FP_PREFIX = "carousel(";
+
+/**
+ * A carousel (one asset, many slides) is described as ONE treatment:
+ * layout "carousel", its recorded dominant strategy, whether any slide
+ * used a generated image, and a fingerprint listing the distinct sources
+ * its slides showed, in slide order — e.g.
+ * "carousel(none | screenshot:04.png | generated)".
+ */
+function describeCarouselTreatment(provenance: Provenance): AssetTreatment | null {
+  const visualPlan = asRecord(provenance.visualPlan);
+  const strategy = visualPlan?.strategy;
+  if (typeof strategy !== "string" || !(VISUAL_STRATEGIES as readonly string[]).includes(strategy)) return null;
+  const origin = visualPlan?.origin;
+  const parts: string[] = [];
+  let generatedImage = false;
+  for (const raw of Array.isArray(provenance.carouselSlides) ? provenance.carouselSlides : []) {
+    const slide = asRecord(raw);
+    const slideTreatment = describeAssetTreatment({
+      ...(asRecord(slide?.rendered) ?? {}),
+      visualPlan: { strategy: slide?.strategy, origin: "visual_director", generatedImage: slide?.generatedImage },
+    });
+    if (!slideTreatment) continue;
+    generatedImage ||= slideTreatment.generatedImage;
+    if (!parts.includes(slideTreatment.sourceFingerprint)) parts.push(slideTreatment.sourceFingerprint);
+  }
+  return {
+    strategy: strategy as VisualStrategy,
+    strategySource: origin === "reused_plan" || origin === "fallback" ? origin : "visual_director",
+    layout: "carousel",
+    theme: provenance.theme === "a" || provenance.theme === "b" ? provenance.theme : null,
+    sourceFingerprint: `${CAROUSEL_FP_PREFIX}${parts.length > 0 ? parts.join(" | ") : "none"})`,
+    generatedImage,
+    creativeConcept: typeof visualPlan?.creativeConcept === "string" ? truncate(visualPlan.creativeConcept, CONCEPT_MAX_CHARS) : null,
+  };
 }
+
+/** The individual source fingerprints behind a fingerprint (a carousel's slides; otherwise just itself). */
+export function sourceFingerprintParts(fingerprint: string): string[] {
+  if (fingerprint.startsWith(CAROUSEL_FP_PREFIX) && fingerprint.endsWith(")")) {
+    return fingerprint.slice(CAROUSEL_FP_PREFIX.length, -1).split(" | ");
+  }
+  return [fingerprint];
+}
+
+/** True for fingerprints that identify reusable real material (a repeat means the same pixels) — for a carousel, if any slide does. */
+export function isVerifiedSourceFingerprint(fingerprint: string): boolean {
+  return sourceFingerprintParts(fingerprint).some((part) => part !== "none" && part !== "generated");
+}
+
+const verifiedParts = (fingerprint: string) => sourceFingerprintParts(fingerprint).filter((part) => isVerifiedSourceFingerprint(part));
 
 function daysBetween(now: Date, iso: string): number {
   return Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / DAY_MS));
@@ -202,7 +251,7 @@ function summarize(entries: VisualHistoryEntry[]): RecentVisualHistory["summary"
   const daysSinceLastUse: Partial<Record<VisualStrategy, number>> = {};
   for (const e of entries) {
     strategyCounts[e.strategy] = (strategyCounts[e.strategy] ?? 0) + 1;
-    sourceCounts[e.sourceFingerprint] = (sourceCounts[e.sourceFingerprint] ?? 0) + 1;
+    for (const part of sourceFingerprintParts(e.sourceFingerprint)) sourceCounts[part] = (sourceCounts[part] ?? 0) + 1;
     daysSinceLastUse[e.strategy] = Math.min(daysSinceLastUse[e.strategy] ?? Infinity, e.daysAgo);
   }
   const recentPublished = entries
@@ -326,9 +375,9 @@ export interface VarietyAssessment {
  */
 export function assessVariety(treatment: AssetTreatment, channel: string, history: RecentVisualHistory): VarietyAssessment {
   const sameStrategy = history.entries.filter((e) => e.strategy === treatment.strategy);
-  const repeatsRecentSource =
-    isVerifiedSourceFingerprint(treatment.sourceFingerprint) &&
-    history.entries.some((e) => e.sourceFingerprint === treatment.sourceFingerprint);
+  // Any shared real source counts (a carousel slide reusing the same proposal pages is still the same pixels).
+  const current = verifiedParts(treatment.sourceFingerprint);
+  const repeatsRecentSource = current.length > 0 && history.entries.some((e) => verifiedParts(e.sourceFingerprint).some((part) => current.includes(part)));
   const latestPublishedOnChannel = history.entries.find((e) => e.status === "published" && e.channel === channel);
   return {
     repeatsRecentStrategy: sameStrategy.length > 0,

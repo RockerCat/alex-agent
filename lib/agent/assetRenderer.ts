@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
 import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
 import { DEFAULT_RENDER_SPEC, type AssetRenderSpec, type VisualStrategy } from "@/lib/agent/schemas";
-import { BUNDLED_FONT_NAME, outlineText, TextOutlineError, type OutlinedTextOptions } from "@/lib/agent/textOutline";
+import { BUNDLED_FONT_NAME, measureText, outlineText, TextOutlineError, type OutlinedTextOptions } from "@/lib/agent/textOutline";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
 // rasterized by Sharp, with the real official logo PNG composited on
@@ -77,6 +77,47 @@ async function outlineOrFail(options: OutlinedTextOptions): Promise<string> {
     if (err instanceof TextOutlineError) throw new AssetRenderError(err.message);
     throw err;
   }
+}
+
+/**
+ * The amber CTA pill plus its outlined label, centered on `centerY`, or
+ * nothing at all when `ctaText` is null (carousel slides other than the
+ * last one carry no CTA). Same fit math and fail-safe as before.
+ */
+async function ctaMarkup(
+  ctaText: string | null,
+  spec: AssetRenderSpec,
+  centerY: number
+): Promise<{ svg: string; fontSize: number | null }> {
+  if (ctaText === null) return { svg: "", fontSize: null };
+  const ctaPaddingScale = CTA_EMPHASIS_PADDING_SCALE[spec.ctaEmphasis];
+  const ctaWrap = wrapToFit(ctaText, CTA_EMPHASIS_FONT_SIZES[spec.ctaEmphasis], CONTENT_WIDTH - 96, 1);
+  if (!ctaWrap) {
+    throw new AssetRenderError("The approved CTA text is too long to render safely within a single-line CTA pill.");
+  }
+  const ctaLine = ctaWrap.lines[0];
+  const ctaFontSize = ctaWrap.fontSize;
+  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96 * ctaPaddingScale);
+  const ctaPillHeight = ctaFontSize + 48 * ctaPaddingScale;
+  const labelSvg = await outlineOrFail({
+    label: "approved CTA",
+    lines: [{ text: ctaLine, x: IMAGE_POST_WIDTH / 2, y: centerY + ctaFontSize * 0.32 }],
+    weight: "bold",
+    fontSize: ctaFontSize,
+    fill: NAVY,
+  });
+  return {
+    svg: `<rect
+        x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
+        y="${centerY - ctaPillHeight / 2}"
+        width="${ctaPillWidth}"
+        height="${ctaPillHeight}"
+        rx="${ctaPillHeight / 2}"
+        fill="${AMBER}"
+      />
+      ${labelSvg}`,
+    fontSize: ctaFontSize,
+  };
 }
 
 /** Baseline-positioned lines for a headline wrapped by wrapToFit, centered on the canvas — same geometry the previous <text>/<tspan dy> markup produced. */
@@ -282,7 +323,8 @@ const HERO_CARD_RADIUS = 20;
 
 export interface RenderAssetInput {
   headline: string;
-  ctaText: string;
+  /** The CTA pill's label, or null for no CTA pill at all (carousel slides before the last one). */
+  ctaText: string | null;
   assetVersion: number;
   /** Approved draft fields used only to decide whether a real product screenshot belongs in the composition — never used as literal layout instructions. Ignored for source selection when `strategy`/`forceScreenshotMeta`/`forceProposalMeta` are explicitly provided (Visual Director path); still used for headline/CTA text wrapping regardless. */
   visualDirection?: string;
@@ -570,18 +612,6 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     );
   }
 
-  const ctaPaddingScale = CTA_EMPHASIS_PADDING_SCALE[spec.ctaEmphasis];
-  const ctaWrap = wrapToFit(input.ctaText, CTA_EMPHASIS_FONT_SIZES[spec.ctaEmphasis], CONTENT_WIDTH - 96, 1);
-  if (!ctaWrap) {
-    throw new AssetRenderError(
-      "The approved CTA text is too long to render safely within a single-line CTA pill."
-    );
-  }
-  const ctaLine = ctaWrap.lines[0];
-  const ctaFontSize = ctaWrap.fontSize;
-  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96 * ctaPaddingScale);
-  const ctaPillHeight = ctaFontSize + 48 * ctaPaddingScale;
-
   const accentBarSvg =
     theme.accentBarPosition === "top"
       ? `<rect x="0" y="0" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`
@@ -654,13 +684,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     });
   }
 
-  const ctaSvg = await outlineOrFail({
-    label: "approved CTA",
-    lines: [{ text: ctaLine, x: IMAGE_POST_WIDTH / 2, y: ctaY + ctaFontSize * 0.32 }],
-    weight: "bold",
-    fontSize: ctaFontSize,
-    fill: NAVY,
-  });
+  const cta = await ctaMarkup(input.ctaText, spec, ctaY);
 
   const svg = `
     <svg width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
@@ -670,15 +694,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
       ${cardSvg}
       ${proposalSvg}
       ${disclosureSvg}
-      <rect
-        x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
-        y="${ctaY - ctaPillHeight / 2}"
-        width="${ctaPillWidth}"
-        height="${ctaPillHeight}"
-        rx="${ctaPillHeight / 2}"
-        fill="${AMBER}"
-      />
-      ${ctaSvg}
+      ${cta.svg}
     </svg>
   `;
 
@@ -710,7 +726,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
       renderSpec: spec,
       logoFile: LOGO_FILE,
       headline: { source: "draft.hook", fontSize: headlineWrap.fontSize, lines: headlineWrap.lines.length },
-      cta: { source: "draft.cta_text", fontSize: ctaFontSize },
+      cta: cta.fontSize === null ? null : { source: "draft.cta_text", fontSize: cta.fontSize },
       screenshot: screenshotMeta
         ? {
             selected: usesProductLayout,
@@ -759,16 +775,6 @@ async function renderHeroComposition(
       "The approved headline is too long to render safely within the image layout without truncating or overflowing it."
     );
   }
-  const ctaPaddingScale = CTA_EMPHASIS_PADDING_SCALE[spec.ctaEmphasis];
-  const ctaWrap = wrapToFit(input.ctaText, CTA_EMPHASIS_FONT_SIZES[spec.ctaEmphasis], CONTENT_WIDTH - 96, 1);
-  if (!ctaWrap) {
-    throw new AssetRenderError("The approved CTA text is too long to render safely within a single-line CTA pill.");
-  }
-  const ctaLine = ctaWrap.lines[0];
-  const ctaFontSize = ctaWrap.fontSize;
-  const ctaPillWidth = Math.min(CONTENT_WIDTH, ctaLine.length * ctaFontSize * 0.58 + 96 * ctaPaddingScale);
-  const ctaPillHeight = ctaFontSize + 48 * ctaPaddingScale;
-
   const screenshotMeta = input.strategy === "hybrid" ? (input.forceScreenshotMeta ?? null) : null;
   const proposalMeta = input.strategy === "hybrid" && !screenshotMeta ? (input.forceProposalMeta ?? null) : null;
 
@@ -817,13 +823,7 @@ async function renderHeroComposition(
       })
     : "";
 
-  const ctaSvg = await outlineOrFail({
-    label: "approved CTA",
-    lines: [{ text: ctaLine, x: IMAGE_POST_WIDTH / 2, y: HERO_CTA_Y + ctaFontSize * 0.32 }],
-    weight: "bold",
-    fontSize: ctaFontSize,
-    fill: NAVY,
-  });
+  const cta = await ctaMarkup(input.ctaText, spec, HERO_CTA_Y);
 
   const logoWidth = Math.round(LOGO_WIDTH * LOGO_EMPHASIS_SCALE[spec.logoEmphasis]);
   const logoChipWidth = logoWidth + HERO_LOGO_CHIP_PADDING * 2;
@@ -845,15 +845,7 @@ async function renderHeroComposition(
       <rect x="${MARGIN_X - HERO_LOGO_CHIP_PADDING}" y="${HERO_LOGO_Y - HERO_LOGO_CHIP_PADDING}" width="${logoChipWidth}" height="${logoChipHeight}" rx="${HERO_LOGO_CHIP_RADIUS}" fill="${NAVY}" fill-opacity="0.72" />
       ${disclosureSvg}
       ${headlineSvg}
-      <rect
-        x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
-        y="${HERO_CTA_Y - ctaPillHeight / 2}"
-        width="${ctaPillWidth}"
-        height="${ctaPillHeight}"
-        rx="${ctaPillHeight / 2}"
-        fill="${AMBER}"
-      />
-      ${ctaSvg}
+      ${cta.svg}
     </svg>
   `;
 
@@ -886,7 +878,7 @@ async function renderHeroComposition(
       renderSpec: spec,
       logoFile: LOGO_FILE,
       headline: { source: "draft.hook", fontSize: headlineWrap.fontSize, lines: headlineWrap.lines.length },
-      cta: { source: "draft.cta_text", fontSize: ctaFontSize },
+      cta: cta.fontSize === null ? null : { source: "draft.cta_text", fontSize: cta.fontSize },
       screenshot: screenshotMeta
         ? { selected: insetCard !== null, file: screenshotMeta.file, visibleSubject: screenshotMeta.visibleSubject, source: SCREENSHOT_DIR }
         : { selected: false },
@@ -900,4 +892,77 @@ async function renderHeroComposition(
         : { selected: false },
     },
   };
+}
+
+// ---------------------------------------------------------------------
+// Instagram carousel v1 helpers. Each slide is an ordinary 1080x1350
+// render through renderImagePostAsset (same layouts, same bundled
+// outline typography, same asset-version theme for every slide); these
+// helpers only add what a single image never needed.
+// ---------------------------------------------------------------------
+
+type SlideLayout = "text_only" | "product" | "proposal" | "hero";
+
+const SLIDE_LAYOUT_HEADLINE_FIT: Record<SlideLayout, { sizes: number[]; maxLines: number }> = {
+  text_only: { sizes: [72, 64, 56, 48, 40], maxLines: 4 },
+  product: { sizes: PRODUCT_HEADLINE_SIZES, maxLines: PRODUCT_HEADLINE_MAX_LINES },
+  proposal: { sizes: PROPOSAL_HEADLINE_SIZES, maxLines: PROPOSAL_HEADLINE_MAX_LINES },
+  hero: { sizes: HERO_HEADLINE_SIZES, maxLines: HERO_HEADLINE_MAX_LINES },
+};
+
+function layoutForStrategy(strategy: VisualStrategy): SlideLayout {
+  if (strategy === "product_ui") return "product";
+  if (strategy === "proposal_document") return "proposal";
+  if (strategy === "branded_graphic") return "text_only";
+  return "hero";
+}
+
+/**
+ * True when approved `text` fits, without truncation, the headline area
+ * of the layout `strategy` renders with — the exact wrap math the
+ * renderer itself applies. Lets carousel planning downgrade a slide to
+ * the highest-capacity text layout (branded_graphic) BEFORE any paid
+ * image call instead of failing deep inside rendering.
+ */
+export function slideTextFitsStrategy(text: string, strategy: VisualStrategy): boolean {
+  const fit = SLIDE_LAYOUT_HEADLINE_FIT[layoutForStrategy(strategy)];
+  return wrapToFit(text, fit.sizes, CONTENT_WIDTH, fit.maxLines) !== null;
+}
+
+const SLIDE_MARKER_FONT_SIZE = 26;
+const SLIDE_MARKER_PADDING_X = 16;
+const SLIDE_MARKER_HEIGHT = 44;
+const SLIDE_MARKER_TOP = 64;
+
+/**
+ * Composites a subtle "i/N" progression marker (top-right, small navy
+ * chip, bundled outline typography) onto a finished slide render.
+ * Deterministic; secondary to the slide's own content.
+ */
+export async function addSlideMarker(png: Buffer, position: number, total: number): Promise<Buffer> {
+  const label = `${position}/${total}`;
+  const right = IMAGE_POST_WIDTH - MARGIN_X;
+  const textWidth = await measureText(label, "regular", SLIDE_MARKER_FONT_SIZE);
+  const chipWidth = Math.ceil(textWidth + SLIDE_MARKER_PADDING_X * 2);
+  const labelSvg = await outlineOrFail({
+    label: "slide marker",
+    lines: [{ text: label, x: right - SLIDE_MARKER_PADDING_X, y: SLIDE_MARKER_TOP + SLIDE_MARKER_HEIGHT / 2 + SLIDE_MARKER_FONT_SIZE * 0.35 }],
+    weight: "regular",
+    fontSize: SLIDE_MARKER_FONT_SIZE,
+    fill: WHITE,
+    fillOpacity: 0.85,
+    anchor: "end",
+  });
+  const overlay = `
+    <svg width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="${right - chipWidth}" y="${SLIDE_MARKER_TOP}" width="${chipWidth}" height="${SLIDE_MARKER_HEIGHT}" rx="${SLIDE_MARKER_HEIGHT / 2}" fill="${NAVY}" fill-opacity="0.72" />
+      ${labelSvg}
+    </svg>
+  `;
+  return sharp(png).composite([{ input: Buffer.from(overlay), top: 0, left: 0 }]).png().toBuffer();
+}
+
+/** The JPEG publication copy of a slide (Meta documents JPEG for carousel image items). */
+export async function toPublicationJpeg(png: Buffer): Promise<Buffer> {
+  return sharp(png).flatten({ background: NAVY }).jpeg({ quality: 90, chromaSubsampling: "4:4:4" }).toBuffer();
 }

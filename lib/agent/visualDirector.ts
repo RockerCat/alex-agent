@@ -1,4 +1,4 @@
-import type { AiClient, VisualDirectorCallResult } from "@/lib/agent/aiClient";
+import type { AiClient, VisualDirectorCallResult, CarouselVisualDirectorCallResult } from "@/lib/agent/aiClient";
 import { VISUAL_STRATEGIES } from "@/lib/agent/schemas";
 import type { RecentVisualHistory } from "@/lib/agent/visualHistory";
 
@@ -17,8 +17,10 @@ import type { RecentVisualHistory } from "@/lib/agent/visualHistory";
 export interface GenerativeBudgetHint {
   /** Pre-call estimate for one generation at the fixed size/quality (lib/agent/imageGenerationClient.ts), or null if unknown. */
   approxCostUsd: number | null;
-  /** Whether the current budget snapshot leaves room for one generation this run. Informational — Budget Guard still decides before any paid call. */
+  /** Whether the current budget snapshot leaves room for `generations` generations this run. Informational — Budget Guard still decides before any paid call. */
   budgetPermits: boolean;
+  /** How many generations `budgetPermits` was evaluated for (1 for a single image; the carousel cap for a carousel). Defaults to 1. */
+  generations?: number;
 }
 
 export interface VisualDirectorContext {
@@ -107,8 +109,11 @@ function generativeLine(context: VisualDirectorContext): string {
   }
   const cost =
     context.generativeBudget.approxCostUsd !== null ? `approximately $${context.generativeBudget.approxCostUsd.toFixed(3)} per low-quality generation` : "cost per generation unknown";
+  const n = context.generativeBudget.generations ?? 1;
   const budget = context.generativeBudget.budgetPermits
-    ? "the current AI budget leaves room for one generation this run"
+    ? n === 1
+      ? "the current AI budget leaves room for one generation this run"
+      : `the current AI budget leaves room for up to ${n} generations this run`
     : "the current AI budget does NOT leave room for a generation this run — a generated strategy would not execute and would fall back to branded_graphic";
   return `Generative capability IS available this call (${cost}; ${budget}). The Budget Guard makes the final decision before any paid image call; if it blocks, the piece falls back to branded_graphic.`;
 }
@@ -141,6 +146,67 @@ export function buildVisualDirectorPrompt(context: VisualDirectorContext): { sys
   ].join("\n");
 
   return { system, user };
+}
+
+export interface CarouselVisualDirectorContext extends VisualDirectorContext {
+  /** The approved slides, in order — each is rendered verbatim as that slide's text. */
+  slides: { slideNumber: number; text: string }[];
+  maxGeneratedSlides: number;
+}
+
+const CAROUSEL_GUIDANCE = [
+  "You are planning ONE Instagram carousel: one editorial unit, one visual system, published as a single post.",
+  "Return one carousel-level plan (creativeConcept, communicationGoal, renderSpec, rationale, varietyRationale) plus exactly one slidePlans entry per approved slide, in order, with slideNumber 1..N matching the slides listed.",
+  "- One coherent creative concept and shared brand/art direction across all slides; deliberate progression from slide to slide (e.g. idea → evidence → result → call to action).",
+  "- Enough visual variation between slides that they don't read as N identical cards, but never variety for its own sake — each slide's treatment must fit that slide's own text.",
+  "- Per-slide strategies available in a carousel: branded_graphic, product_ui, proposal_document, generated_photo, generated_illustration. hybrid is NOT available inside a carousel.",
+  "- Each slide's approved text is drawn on that slide exactly as written; the CTA button appears only on the last slide. You never add, remove, merge or reorder slides.",
+  "- Set generativeSceneDescription only for generated_photo/generated_illustration slides (scene/style only, same rules as above); null for every other slide.",
+];
+
+export function buildCarouselVisualDirectorPrompt(context: CarouselVisualDirectorContext): { system: string; user: string } {
+  const system = [
+    "You are AlexAgent's Visual Director: you decide HOW an already-approved SolarDesk marketing post should be communicated visually, before any image is produced.",
+    "Evaluate the carousel's actual communication goal — not just keyword matches. Do not select proposal_document or product_ui for a slide merely because its text contains a related word (e.g. 'propuesta') if that slide's point is conceptual rather than showing the document/product itself.",
+    BRAND_VISUAL_CONSTRAINTS,
+    STRATEGY_GUIDANCE,
+    ...CAROUSEL_GUIDANCE,
+    `- At most ${context.maxGeneratedSlides} slides may use generated imagery (generated_photo/generated_illustration); any beyond that are rendered as branded_graphic instead. Generated imagery is never required.`,
+    VARIETY_GUIDANCE,
+    generativeLine(context),
+  ].join("\n");
+
+  const user = [
+    "=== Approved carousel draft ===",
+    `Channel: ${context.channel}`,
+    `Topic: ${context.topic}`,
+    `Purpose: ${context.purpose}`,
+    `Audience: ${context.audience}`,
+    `Hook (context only — not rendered as a slide): ${context.hook}`,
+    `CTA (last slide only): ${context.ctaText}`,
+    `Approved visual direction: ${context.visualDirection || "(none)"}`,
+    "",
+    `=== Approved slides (${context.slides.length}, in publication order) ===`,
+    ...context.slides.map((sl) => `${sl.slideNumber}. ${sl.text}`),
+    "",
+    "=== Available verified visual sources ===",
+    context.availableVerifiedSources,
+    "",
+    `=== Recent SolarDesk visual history (last ${context.recentHistory.windowDays} days, one line per post, newest first) ===`,
+    formatHistory(context.recentHistory),
+  ].join("\n");
+
+  return { system, user };
+}
+
+export function estimateCarouselVisualDirectorInputTokens(context: CarouselVisualDirectorContext): number {
+  const { system, user } = buildCarouselVisualDirectorPrompt(context);
+  return Math.ceil((system.length + user.length) / 4) + 50;
+}
+
+export async function callCarouselVisualDirector(aiClient: AiClient, context: CarouselVisualDirectorContext): Promise<CarouselVisualDirectorCallResult> {
+  const { system, user } = buildCarouselVisualDirectorPrompt(context);
+  return aiClient.runCarouselVisualDirector({ systemPrompt: system, userPrompt: user });
 }
 
 export async function callVisualDirector(aiClient: AiClient, context: VisualDirectorContext): Promise<VisualDirectorCallResult> {

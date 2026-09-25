@@ -6,7 +6,7 @@ import type { FacebookPageClient } from "@/lib/agent/facebookClient";
 import { MetaGraphFacebookClient } from "@/lib/agent/facebookClient";
 import type { InstagramGraphClient } from "@/lib/agent/instagramClient";
 import { MetaGraphInstagramClient } from "@/lib/agent/instagramClient";
-import { publishAssetToFacebook, publishAssetToInstagram, getPublication, isRetrySafeFailure } from "@/lib/agent/publish";
+import { publishAssetToFacebook, publishAssetToInstagram, publishCarouselToInstagram, getPublication, isRetrySafeFailure } from "@/lib/agent/publish";
 import { getLatestAsset } from "@/lib/agent/assetGenerator";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -107,10 +107,15 @@ export async function publishEmailAuthorizedAsset(deps: PublicationDeps, assetId
 
   // Exact channel only — the canonical publisher re-checks draft.channel,
   // format, status, asset ownership, and the final caption itself.
+  if (asset.format === "carousel" && draft.channel !== "instagram") {
+    return { status: "not_eligible", reason: `carousel publishing is only supported on Instagram, not "${draft.channel}"` };
+  }
   const outcome =
     draft.channel === "facebook"
       ? await publishAssetToFacebook({ db: deps.db, storage: deps.storage, facebookClient: deps.facebookClient, draftId: draft.id, assetId: asset.id })
-      : await publishAssetToInstagram({ db: deps.db, storage: deps.storage, instagramClient: deps.instagramClient, draftId: draft.id, assetId: asset.id, delay: deps.delay });
+      : asset.format === "carousel"
+        ? await publishCarouselToInstagram({ db: deps.db, storage: deps.storage, instagramClient: deps.instagramClient, draftId: draft.id, assetId: asset.id, delay: deps.delay })
+        : await publishAssetToInstagram({ db: deps.db, storage: deps.storage, instagramClient: deps.instagramClient, draftId: draft.id, assetId: asset.id, delay: deps.delay });
 
   if (outcome.status === "success") return { status: "published", channel: draft.channel };
   if (outcome.status === "concurrent") return { status: "concurrent" };

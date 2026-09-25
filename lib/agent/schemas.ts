@@ -306,3 +306,51 @@ export type VisualCreativePlan = z.infer<typeof visualCreativePlanSchema>;
 
 /** The Visual Director's structured OUTPUT format: every new plan must explain its relation to recent history (strict structured outputs also require every field). */
 export const visualDirectorOutputSchema = z.object({ ...visualCreativePlanFields, varietyRationale: varietyRationaleField });
+
+// ---------------------------------------------------------------------
+// Carousel visual plan (Instagram carousel v1). ONE Visual Director call
+// per carousel: carousel-level art direction (same concept/goal/render
+// settings/rationale/variety fields as a single-image plan) plus ordered
+// per-slide treatments. Deliberately narrower per-slide strategy set
+// than VISUAL_STRATEGIES: no `hybrid` in carousel v1. Slide count/order
+// and the generated-slide cap are enforced by application code
+// (lib/agent/carouselPlan.ts), never trusted from the model.
+// ---------------------------------------------------------------------
+export const CAROUSEL_SLIDE_STRATEGIES = [
+  "branded_graphic",
+  "product_ui",
+  "proposal_document",
+  "generated_photo",
+  "generated_illustration",
+] as const;
+export type CarouselSlideStrategy = (typeof CAROUSEL_SLIDE_STRATEGIES)[number];
+
+/** v1 cap on paid image generations per carousel; generated slides beyond it are deterministically downgraded. */
+export const CAROUSEL_MAX_GENERATED_SLIDES = 2;
+/** Meta's documented carousel ceiling; the draft validator's own 3–6 range is stricter. */
+export const CAROUSEL_MAX_SLIDES = 10;
+
+export const carouselSlidePlanSchema = z.object({
+  slideNumber: z.number().int().min(1).max(CAROUSEL_MAX_SLIDES),
+  strategy: z.enum(CAROUSEL_SLIDE_STRATEGIES),
+  verifiedSourceCategory: z.enum(VERIFIED_SOURCE_CATEGORIES),
+  compositionIntent: z.enum(COMPOSITION_INTENTS),
+  /** Scene/style only, for generated_photo/generated_illustration slides; null otherwise. */
+  generativeSceneDescription: z.string().min(1).max(VISUAL_PLAN_TEXT_LIMITS.generativeSceneDescription).nullable(),
+});
+export type CarouselSlidePlan = z.infer<typeof carouselSlidePlanSchema>;
+
+const carouselPlanFields = {
+  creativeConcept: visualCreativePlanFields.creativeConcept,
+  communicationGoal: visualCreativePlanFields.communicationGoal,
+  renderSpec: visualCreativePlanFields.renderSpec,
+  rationale: visualCreativePlanFields.rationale,
+  slidePlans: z.array(carouselSlidePlanSchema).min(1).max(CAROUSEL_MAX_SLIDES),
+};
+
+/** A carousel plan as stored/reused (varietyRationale optional, same posture as visualCreativePlanSchema). */
+export const carouselVisualPlanSchema = z.object({ ...carouselPlanFields, varietyRationale: varietyRationaleField.optional() });
+export type CarouselVisualPlan = z.infer<typeof carouselVisualPlanSchema>;
+
+/** The carousel Visual Director's structured OUTPUT format (every field required). */
+export const carouselVisualDirectorOutputSchema = z.object({ ...carouselPlanFields, varietyRationale: varietyRationaleField });

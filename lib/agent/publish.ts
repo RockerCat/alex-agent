@@ -515,6 +515,149 @@ export async function publishAssetToInstagram(params: {
   return { status: "success", publication: updated };
 }
 
+// ---------------------------------------------------------------------
+// Instagram carousel v1. ONE carousel asset (format 'carousel', ordered
+// content_assets.slides) → ONE (asset_id, 'instagram') claim → ONE public
+// post. Flow: one carousel item container per slide IN ORDER (no
+// caption), each polled to FINISHED; one parent CAROUSEL container with
+// the ordered children and the final caption, polled to FINISHED; then
+// exactly one media_publish.
+//
+// Provider-outcome safety is the single-image rule applied per stage:
+// only media_publish can make anything public. Every earlier failure
+// (config/signed URL, item or parent creation, item or parent readiness
+// ERROR/EXPIRED/timeout/status-read failure) is retry-safe — orphaned
+// containers are never public and expire on Meta's side. A container
+// reported PUBLISHED, and any media_publish failure that isn't an
+// authoritative rejection, is UNCERTAIN: the row stays 'publishing' with
+// the [uncertain] marker (naming the parent container for manual
+// verification) and is never retried automatically or from the dashboard.
+// ---------------------------------------------------------------------
+
+/** Longer than the single-image TTL: Meta fetches every slide while items are created and polled sequentially. */
+const INSTAGRAM_CAROUSEL_IMAGE_URL_TTL_SECONDS = 900;
+/** Meta requires at least 2 carousel items and allows at most 10. */
+const INSTAGRAM_CAROUSEL_MIN_ITEMS = 2;
+const INSTAGRAM_CAROUSEL_MAX_ITEMS = 10;
+
+export async function publishCarouselToInstagram(params: {
+  db: SupabaseClient<Database>;
+  storage: AssetStorage;
+  instagramClient: InstagramGraphClient;
+  draftId: string;
+  assetId: string;
+  delay?: (ms: number) => Promise<void>;
+}): Promise<PublishAssetOutcome> {
+  const { db, storage, instagramClient, draftId, assetId, delay = defaultDelay } = params;
+
+  if (!instagramPublishingCapabilityAvailable()) {
+    return { status: "failed", message: "Instagram publishing is not configured (missing META_INSTAGRAM_ACCESS_TOKEN / META_INSTAGRAM_ACCOUNT_ID)." };
+  }
+  const { data: draft } = await db.from("content_drafts").select("*").eq("id", draftId).single();
+  if (!draft) return { status: "ineligible", message: "Draft not found." };
+  const { data: asset } = await db.from("content_assets").select("*").eq("id", assetId).single();
+  if (!asset) return { status: "ineligible", message: "Asset not found." };
+  if (asset.draft_id !== draft.id) return { status: "ineligible", message: "Asset does not belong to the specified draft." };
+  if (draft.brand !== "solardesk") return { status: "ineligible", message: "Instagram publishing is only supported for SolarDesk." };
+  if (draft.channel !== "instagram") return { status: "ineligible", message: `Draft channel is "${draft.channel}" — carousels are only published to Instagram.` };
+  if (draft.content_type !== "carousel") return { status: "ineligible", message: `Content type "${draft.content_type}" is not a carousel.` };
+  if (asset.format !== "carousel") return { status: "ineligible", message: `Asset format "${asset.format}" is not a carousel.` };
+  if (asset.status !== "ready_to_publish") {
+    return { status: "ineligible", message: `Asset is in status "${asset.status}" — only a Ready to publish asset can be published.` };
+  }
+  const slides = asset.slides ?? [];
+  const ordered = slides.every((s, i) => s.position === i + 1 && typeof s.storage_path === "string" && s.storage_path.length > 0);
+  if (!ordered || slides.length < INSTAGRAM_CAROUSEL_MIN_ITEMS || slides.length > INSTAGRAM_CAROUSEL_MAX_ITEMS) {
+    return { status: "ineligible", message: `Carousel asset must have ${INSTAGRAM_CAROUSEL_MIN_ITEMS}–${INSTAGRAM_CAROUSEL_MAX_ITEMS} stored slides in order 1..N.` };
+  }
+  if (!baseSocialCaption(draft)) return { status: "ineligible", message: "Draft has no approved caption or hook to publish." };
+  const captionCheck = checkFinalSocialCaption(draft, "instagram");
+  if (!captionCheck.ok) return { status: "ineligible", message: captionCheck.reason };
+  const caption = captionCheck.caption;
+
+  const claim = await claimPublicationSlot(db, { assetId: asset.id, draftId: draft.id, brand: draft.brand, channel: "instagram" });
+  if (!claim.ok) return claim.outcome;
+  const lockRow = claim.row;
+
+  const failRetrySafe = async (message: string): Promise<PublishAssetOutcome> => {
+    await markPublicationFailed(db, lockRow.id, message);
+    return { status: "failed", message };
+  };
+  const holdUncertain = async (message: string): Promise<PublishAssetOutcome> => {
+    await markPublicationUncertain(db, lockRow.id, message);
+    return uncertainOutcome("Instagram", message);
+  };
+  const describe = (err: unknown, stage: string) =>
+    err instanceof InstagramPublishError ? err.message : `Unexpected error ${stage}: ${err instanceof Error ? err.message : "unknown error"}`;
+
+  const imageUrls: string[] = [];
+  for (const slide of slides) {
+    const url = await storage.createSignedUrl(slide.storage_path, INSTAGRAM_CAROUSEL_IMAGE_URL_TTL_SECONDS);
+    if (!url) return failRetrySafe(`Could not create a signed URL for carousel slide ${slide.position}.`);
+    imageUrls.push(url);
+  }
+
+  // Items, strictly in slide order. Nothing here is public.
+  const children: string[] = [];
+  for (const [i, imageUrl] of imageUrls.entries()) {
+    let childId: string;
+    try {
+      childId = (await instagramClient.createCarouselItemContainer({ imageUrl })).creationId;
+    } catch (err) {
+      return failRetrySafe(`Carousel slide ${i + 1}: ${describe(err, "creating the Instagram carousel item container")}`);
+    }
+    try {
+      await waitForInstagramContainerReady(instagramClient, childId, delay);
+    } catch (err) {
+      const message = `Carousel slide ${i + 1}: ${describe(err, "checking Instagram carousel item readiness")}`;
+      if (err instanceof InstagramContainerAlreadyPublishedError) return holdUncertain(message);
+      return failRetrySafe(message);
+    }
+    children.push(childId);
+  }
+
+  let parentId: string;
+  try {
+    parentId = (await instagramClient.createCarouselContainer({ children, caption })).creationId;
+  } catch (err) {
+    return failRetrySafe(describe(err, "creating the Instagram carousel container"));
+  }
+  try {
+    await waitForInstagramContainerReady(instagramClient, parentId, delay);
+  } catch (err) {
+    const message = `${describe(err, "checking Instagram carousel container readiness")} (carousel container ${parentId})`;
+    if (err instanceof InstagramContainerAlreadyPublishedError) return holdUncertain(message);
+    return failRetrySafe(message);
+  }
+
+  let mediaId: string;
+  try {
+    mediaId = (await instagramClient.publishMediaContainer(parentId)).mediaId;
+  } catch (err) {
+    // The ONE call that makes the carousel public: retry-safe only when
+    // the client proves Meta rejected it; otherwise held for verification.
+    if (err instanceof InstagramPublishError && err.retrySafe) return failRetrySafe(err.message);
+    return holdUncertain(`${describe(err, "publishing the Instagram carousel")} (carousel container ${parentId})`);
+  }
+
+  const { data: updated, error: updateError } = await db
+    .from("asset_publications")
+    .update({ status: "published", meta_post_id: mediaId, published_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("id", lockRow.id)
+    .eq("status", "publishing")
+    .select("*")
+    .single();
+  if (updateError || !updated) {
+    // Meta already published the carousel — the row stays 'publishing', so nothing can publish it again.
+    return {
+      status: "failed",
+      providerOutcomeUncertain: true,
+      message: `Instagram published the carousel (media ID: ${mediaId}) but AlexAgent could not record it locally (${updateError?.message ?? "unknown error"}). Do NOT retry publishing this asset — verify on Instagram and reconcile manually.`,
+    };
+  }
+  return { status: "success", publication: updated };
+}
+
 export async function getPublication(
   db: SupabaseClient<Database>,
   assetId: string,

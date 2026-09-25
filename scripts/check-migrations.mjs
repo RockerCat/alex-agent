@@ -308,6 +308,47 @@ async function main() {
   }
   console.log("OK: approve_asset_if_current mutated only the exact current asset");
 
+  // content_assets carousel format + ordered slides (0014).
+  const legacyAsset = await db.query(`select format, slides from content_assets where id = $1;`, [assetV1]);
+  if (legacyAsset.rows[0].format !== "image_post" || JSON.stringify(legacyAsset.rows[0].slides) !== "[]") {
+    throw new Error(`content_assets defaults changed for image_post rows: ${JSON.stringify(legacyAsset.rows[0])}`);
+  }
+  console.log("OK: content_assets image_post rows default to format 'image_post' and slides '[]'");
+  const carouselSlides = JSON.stringify([
+    { position: 1, storage_path: "d/v3/slide-1.jpg", width: 1080, height: 1350, mime_type: "image/jpeg" },
+    { position: 2, storage_path: "d/v3/slide-2.jpg", width: 1080, height: 1350, mime_type: "image/jpeg" },
+  ]);
+  await db.query(
+    `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status, format, slides)
+     values ($1, 'solardesk', 3, 1, 'pending_review', 'carousel', $2::jsonb);`,
+    [draft2Id, carouselSlides]
+  );
+  const storedCarousel = await db.query(`select slides from content_assets where draft_id = $1 and asset_version = 3;`, [draft2Id]);
+  if (storedCarousel.rows[0].slides.map((s) => s.position).join(",") !== "1,2") {
+    throw new Error(`content_assets.slides did not preserve order: ${JSON.stringify(storedCarousel.rows[0].slides)}`);
+  }
+  console.log("OK: content_assets accepts format 'carousel' with ordered slides");
+  let unknownFormatBlocked = false;
+  try {
+    await db.exec(
+      `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status, format) values ('${draft2Id}', 'solardesk', 4, 1, 'pending_review', 'story');`
+    );
+  } catch (err) {
+    unknownFormatBlocked = /content_assets_format_check/.test(String(err));
+  }
+  if (!unknownFormatBlocked) throw new Error("Expected content_assets.format to reject an unknown format");
+  console.log("OK: content_assets.format rejects an unrecognized format");
+  let nonArrayBlocked = false;
+  try {
+    await db.exec(
+      `insert into content_assets (draft_id, brand, asset_version, source_draft_version, status, format, slides) values ('${draft2Id}', 'solardesk', 5, 1, 'pending_review', 'carousel', '{}'::jsonb);`
+    );
+  } catch (err) {
+    nonArrayBlocked = /content_assets_slides_is_array/.test(String(err));
+  }
+  if (!nonArrayBlocked) throw new Error("Expected content_assets.slides to reject a non-array value");
+  console.log("OK: content_assets.slides rejects a non-array value");
+
   console.log("\nAll migration checks passed.");
   await db.close();
 }

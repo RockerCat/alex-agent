@@ -77,6 +77,7 @@ function asset(overrides: Partial<ContentAssetRow> = {}): ContentAssetRow {
     storage_bucket: "solardesk-assets",
     storage_path: "solardesk/draft/v3.png",
     render_provenance: {},
+    slides: [],
     error_message: null,
     created_at: "2026-09-23T13:00:00Z",
     approved_at: null,
@@ -237,7 +238,7 @@ describe("renderAssetReviewEmail", () => {
     expect(email.text).toContain("Imagen: no disponible");
   });
 
-  it("for a carousel, shows slide texts only and never attaches an image", () => {
+  it("defensive: a carousel draft whose asset isn't a carousel asset shows slide texts only and never attaches an image", () => {
     const email = renderAssetReviewEmail({
       brandDisplayName: "SolarDesk",
       draft: draft({ content_type: "carousel", body: { slides: [{ slide: 1, text: "Uno" }, { slide: 2, text: "Dos" }, { slide: 3, text: "Tres" }] } }),
@@ -246,7 +247,7 @@ describe("renderAssetReviewEmail", () => {
     });
     expect(email.html).not.toContain("cid:");
     expect(email.inlineAttachments).toEqual([]);
-    expect(email.text).toContain("las imágenes de carrusel aún no se generan");
+    expect(email.text).toContain("esta versión no contiene las imágenes del carrusel");
     expect(email.text).toMatch(/1\. Uno\n2\. Dos\n3\. Tres/);
   });
 

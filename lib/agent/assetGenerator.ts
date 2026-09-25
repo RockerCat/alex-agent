@@ -29,6 +29,12 @@ import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/pro
 import { BudgetGuard } from "@/lib/agent/budgetGuard";
 import { env } from "@/lib/env";
 import { isUniqueViolation, recoverStaleRuns } from "@/lib/agent/runLock";
+import {
+  carouselIneligibilityReason,
+  generateCarouselWithoutAi,
+  performCarouselFirstGeneration,
+  regenerateCarouselFromPrevious,
+} from "@/lib/agent/carouselGenerator";
 
 // AlexAgent v0.2 — Visual Director. generateAsset() is the single entry
 // point behind BOTH the "Generate Asset" and "Regenerate" buttons
@@ -140,7 +146,7 @@ export async function listAssets(db: SupabaseClient<Database>, draftId: string):
 // binary content. Deliberately static (not derived from the catalog
 // files at runtime): this is a small, hand-verified summary, same
 // posture as VISUAL_CONSTRAINTS in assetFeedbackInterpreter.ts.
-const AVAILABLE_VERIFIED_SOURCES_SUMMARY = [
+export const AVAILABLE_VERIFIED_SOURCES_SUMMARY = [
   "product_screenshot: real, verified SolarDesk product UI (dashboard/overview, and the proposals list/management screen).",
   "proposal_example: one real, verified client-facing solar proposal PDF SolarDesk can generate (overview page + financial/system-detail page) — any use always shows a visible 'illustrative example' disclosure.",
   "logo: the official SolarDesk logo — always composited automatically regardless of strategy; never request it separately.",
@@ -160,7 +166,7 @@ interface DraftSelectionInput {
   topic: string;
 }
 
-function draftSelectionInput(draft: ContentDraftRow): DraftSelectionInput {
+export function draftSelectionInput(draft: ContentDraftRow): DraftSelectionInput {
   return { visualDirection: draft.visual_direction ?? "", purpose: draft.purpose, topic: draft.topic };
 }
 
@@ -514,8 +520,7 @@ async function regenerateFromPrevious(params: {
   });
 }
 
-/** First-time generation with a real Visual Director call, budget-guarded and brand-locked. */
-async function performFirstGeneration(params: {
+export interface FirstGenerationParams {
   db: SupabaseClient<Database>;
   storage: AssetStorage;
   draft: ContentDraftRow;
@@ -524,7 +529,10 @@ async function performFirstGeneration(params: {
   imageGenerationClient?: ImageGenerationClient;
   budgetGuard: BudgetGuard;
   agentRunId: string;
-}): Promise<GenerateAssetOutcome> {
+}
+
+/** First-time generation with a real Visual Director call, budget-guarded and brand-locked. */
+async function performFirstGeneration(params: FirstGenerationParams): Promise<GenerateAssetOutcome> {
   const { db, storage, draft, nextVersion, aiClient, imageGenerationClient, budgetGuard, agentRunId } = params;
 
   const history = await getRecentVisualHistory(db, draft.brand);
@@ -686,8 +694,10 @@ async function generateFirstAssetWithDirector(params: {
   nextVersion: number;
   aiClient: AiClient;
   imageGenerationClient?: ImageGenerationClient;
+  /** The locked first-generation body: single image by default, or the carousel generator (lib/agent/carouselGenerator.ts). */
+  perform?: (params: FirstGenerationParams) => Promise<GenerateAssetOutcome>;
 }): Promise<GenerateAssetOutcome> {
-  const { db, storage, draft, nextVersion, aiClient, imageGenerationClient } = params;
+  const { db, storage, draft, nextVersion, aiClient, imageGenerationClient, perform = performFirstGeneration } = params;
 
   await recoverStaleRuns(db, draft.brand);
 
@@ -720,7 +730,7 @@ async function generateFirstAssetWithDirector(params: {
     }
 
     const budgetGuard = new BudgetGuard(db);
-    const outcome = await performFirstGeneration({ db, storage, draft, nextVersion, aiClient, imageGenerationClient, budgetGuard, agentRunId: lockRun.id });
+    const outcome = await perform({ db, storage, draft, nextVersion, aiClient, imageGenerationClient, budgetGuard, agentRunId: lockRun.id });
 
     if (outcome.budgetBlocked) {
       await db
@@ -803,11 +813,16 @@ export async function generateAsset(params: {
   if (draft.status !== "approved") {
     return { status: "ineligible", message: `Draft is in status "${draft.status}" — only an approved draft can generate an asset.` };
   }
-  if (draft.content_type !== "image_post") {
-    return { status: "ineligible", message: `Content type "${draft.content_type}" is not supported yet — only image_post.` };
+  if (draft.content_type !== "image_post" && draft.content_type !== "carousel") {
+    return { status: "ineligible", message: `Content type "${draft.content_type}" is not supported yet — only image_post and Instagram carousel.` };
   }
   if (!draft.hook || !draft.cta_text) {
     return { status: "ineligible", message: "The approved draft does not have enough approved text (hook/CTA) to render a safe asset." };
+  }
+  const isCarousel = draft.content_type === "carousel";
+  if (isCarousel) {
+    const reason = carouselIneligibilityReason(draft);
+    if (reason) return { status: "ineligible", message: reason };
   }
 
   const existing = await listAssets(db, draftId);
@@ -818,14 +833,24 @@ export async function generateAsset(params: {
   }
 
   if (existing[0]) {
-    return regenerateFromPrevious({ db, storage, draft, nextVersion, previousAsset: existing[0] });
+    return isCarousel
+      ? regenerateCarouselFromPrevious({ db, storage, draft, nextVersion, previousAsset: existing[0] })
+      : regenerateFromPrevious({ db, storage, draft, nextVersion, previousAsset: existing[0] });
   }
 
   if (!aiClient) {
-    return generateFirstAssetWithoutAi({ db, storage, draft, nextVersion });
+    return isCarousel ? generateCarouselWithoutAi({ db, storage, draft, nextVersion }) : generateFirstAssetWithoutAi({ db, storage, draft, nextVersion });
   }
 
-  return generateFirstAssetWithDirector({ db, storage, draft, nextVersion, aiClient, imageGenerationClient });
+  return generateFirstAssetWithDirector({
+    db,
+    storage,
+    draft,
+    nextVersion,
+    aiClient,
+    imageGenerationClient,
+    perform: isCarousel ? performCarouselFirstGeneration : undefined,
+  });
 }
 
 export interface ApproveAssetOutcome {

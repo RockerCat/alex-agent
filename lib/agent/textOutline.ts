@@ -80,7 +80,7 @@ export function findMissingGlyphs(font: opentype.Font, text: string): string[] {
 
 export interface OutlinedTextLine {
   text: string;
-  /** Anchor x: the horizontal center of the line when `anchor` is "middle" (the renderer's only use). */
+  /** Anchor x: the line's horizontal center ("middle", the default) or its right edge ("end"). */
   x: number;
   /** Baseline y, same meaning as SVG <text>'s `y`. */
   y: number;
@@ -94,6 +94,13 @@ export interface OutlinedTextOptions {
   fontSize: number;
   fill: string;
   fillOpacity?: number;
+  /** Like SVG text-anchor: "middle" (default) centers each line on its x; "end" right-aligns it there. */
+  anchor?: "middle" | "end";
+}
+
+/** Advance width of `text` in the bundled font — the same metric outlineText positions with. */
+export async function measureText(text: string, weight: FontWeight, fontSize: number): Promise<number> {
+  return (await getBundledFont(weight)).getAdvanceWidth(text, fontSize);
 }
 
 /**
@@ -117,7 +124,8 @@ export async function outlineText(options: OutlinedTextOptions): Promise<string>
   const pathData = options.lines
     .map((line) => {
       const width = font.getAdvanceWidth(line.text, options.fontSize);
-      return font.getPath(line.text, line.x - width / 2, line.y, options.fontSize).toPathData(2);
+      const left = options.anchor === "end" ? line.x - width : line.x - width / 2;
+      return font.getPath(line.text, left, line.y, options.fontSize).toPathData(2);
     })
     .join(" ");
 

@@ -184,8 +184,16 @@ describe("continueApprovedImagePost — happy path", () => {
 });
 
 describe("continueApprovedImagePost — eligibility", () => {
-  it("never continues a carousel, a non-approved draft, or a draft without hook/CTA", async () => {
-    for (const overrides of [{ content_type: "carousel" }, { status: "pending_approval" }, { status: "rejected" }, { hook: null }] as Partial<ContentDraftRow>[]) {
+  it("never continues a Facebook carousel, a carousel without clean slides, a non-approved draft, or a draft without hook/CTA", async () => {
+    for (const overrides of [
+      { content_type: "carousel", channel: "facebook" },
+      { content_type: "carousel", body: { slides: [] } },
+      { content_type: "carousel", body: { slides: [{ slide: 1, text: "Uno" }, { slide: 3, text: "Tres" }] } },
+      { content_type: "story" },
+      { status: "pending_approval" },
+      { status: "rejected" },
+      { hook: null },
+    ] as Partial<ContentDraftRow>[]) {
       const h = setup({ drafts: [draftRow(overrides)] });
       const outcome = await continueApprovedImagePost(h.deps, DRAFT_ID);
       expect(outcome.status).toBe("not_eligible");
@@ -315,9 +323,9 @@ describe("runPostApprovalContinuationSweep — cron catch-up", () => {
   const OTHER = "22222222-2222-4222-8222-222222222222";
   const CAROUSEL = "33333333-3333-4333-8333-333333333333";
 
-  it("continues only email-lifecycle image_post drafts; never dashboard-only drafts or carousels", async () => {
+  it("continues only email-lifecycle drafts it supports; never dashboard-only drafts or Facebook carousels", async () => {
     const h = setup({
-      drafts: [draftRow(), draftRow({ id: OTHER }), draftRow({ id: CAROUSEL, content_type: "carousel" })],
+      drafts: [draftRow(), draftRow({ id: OTHER }), draftRow({ id: CAROUSEL, content_type: "carousel", channel: "facebook" })],
       outbox: [enrollmentRow(DRAFT_ID), enrollmentRow(CAROUSEL)], // OTHER was reviewed only in the dashboard
     });
     const sweep = await runPostApprovalContinuationSweep(h.deps);

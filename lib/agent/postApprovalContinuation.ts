@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, ContentAssetRow } from "@/lib/types/database";
+import type { Database, ContentAssetRow, ContentDraftRow } from "@/lib/types/database";
 import type { AssetStorage } from "@/lib/agent/assetStorage";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
 import type { AiClient } from "@/lib/agent/aiClient";
@@ -10,6 +10,7 @@ import type { EmailClient } from "@/lib/agent/emailClient";
 import { ResendEmailClient } from "@/lib/agent/resendEmailClient";
 import { emailOutboundCapabilityAvailable, resolveReviewEmailAddressing, type ReviewEmailAddressing } from "@/lib/agent/emailConfig";
 import { generateAsset, getLatestAsset } from "@/lib/agent/assetGenerator";
+import { carouselIneligibilityReason } from "@/lib/agent/carouselGenerator";
 import { prepareAssetReviewNotification, deliverPreparedReviewEmail } from "@/lib/agent/emailReviewNotifications";
 import { SUPPORTED_BRANDS } from "@/lib/agent/constants";
 import { checkFinalSocialCaption } from "@/lib/agent/finalCaption";
@@ -69,12 +70,20 @@ export type ContinuationOutcome =
 export function continuationIneligibilityReason(draft: {
   status: string;
   content_type: string;
+  channel: string;
   brand: string;
   hook: string | null;
   cta_text: string | null;
+  body: ContentDraftRow["body"];
 }): string | null {
   if (draft.status !== "approved") return `draft is "${draft.status}", not approved`;
-  if (draft.content_type !== "image_post") return `content type "${draft.content_type}" is not supported (image_post only)`;
+  if (draft.content_type === "carousel") {
+    // Instagram carousel v1; Facebook carousel publishing stays unsupported.
+    const reason = carouselIneligibilityReason(draft);
+    if (reason) return reason;
+  } else if (draft.content_type !== "image_post") {
+    return `content type "${draft.content_type}" is not supported (image_post and Instagram carousel only)`;
+  }
   if (!(SUPPORTED_BRANDS as readonly string[]).includes(draft.brand)) return `brand "${draft.brand}" is not supported`;
   if (!draft.hook || !draft.cta_text) return "draft lacks the hook/CTA text needed to render an asset";
   return null;
@@ -186,7 +195,7 @@ export async function runPostApprovalContinuationSweep(
     .from("content_drafts")
     .select("*")
     .eq("status", "approved")
-    .eq("content_type", "image_post")
+    .in("content_type", ["image_post", "carousel"])
     .in("brand", [...SUPPORTED_BRANDS])
     .order("approved_at", { ascending: true });
 

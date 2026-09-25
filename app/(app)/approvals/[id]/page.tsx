@@ -49,6 +49,18 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
   // other caller that predates this).
   const publication = latestAsset ? await getPublication(db, latestAsset.id, draft.channel) : null;
 
+  // Instagram carousel v1: read-only in the dashboard (generation, review,
+  // approval and publication all run through the email lifecycle). Never
+  // routed through the single-image AssetPanel.
+  const isCarousel = draft.status === "approved" && draft.content_type === "carousel";
+  const carouselAssets = isCarousel ? await listAssets(db, draft.id) : [];
+  const latestCarousel = carouselAssets[0] ?? null;
+  const carouselStorage = new SupabaseAssetStorage(db);
+  const carouselSlideUrls = latestCarousel
+    ? await Promise.all((latestCarousel.slides ?? []).map((slide) => carouselStorage.createSignedUrl(slide.storage_path, 3600)))
+    : [];
+  const carouselPublication = latestCarousel ? await getPublication(db, latestCarousel.id, draft.channel) : null;
+
   return (
     <div className="space-y-4">
       <Link href="/approvals" className="text-sm" style={{ color: "var(--muted)" }}>
@@ -150,6 +162,44 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ id
             history={assets.slice(1)}
             publication={publication}
           />
+        </Card>
+      )}
+
+      {isCarousel && (
+        <Card>
+          <h2 className="font-medium mb-1">Carousel</h2>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+            Carousel review, approval and publication run through email. Regenerate and Request Changes are not available for carousels in
+            the dashboard yet.
+          </p>
+          {!latestCarousel ? (
+            <p className="text-sm">No carousel images generated yet.</p>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <p>
+                v{latestCarousel.asset_version} · {latestCarousel.status.replace(/_/g, " ")} · {(latestCarousel.slides ?? []).length} slides
+                {carouselPublication ? ` · Instagram: ${carouselPublication.status}` : ""}
+              </p>
+              {latestCarousel.error_message && <p style={{ color: "#b91c1c" }}>{latestCarousel.error_message}</p>}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {(latestCarousel.slides ?? []).map((slide, i) => (
+                  <figure key={slide.position}>
+                    {carouselSlideUrls[i] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={carouselSlideUrls[i]!} alt={`Slide ${slide.position}`} className="w-full rounded border" style={{ borderColor: "var(--border)" }} />
+                    ) : (
+                      <div className="text-xs" style={{ color: "var(--muted)" }}>
+                        Preview unavailable
+                      </div>
+                    )}
+                    <figcaption className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+                      {slide.position}/{(latestCarousel.slides ?? []).length}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
       )}
 

@@ -7,7 +7,7 @@ import { BRAND_DISPLAY_NAMES, type SupportedBrand } from "@/lib/agent/constants"
 import { isUniqueViolation } from "@/lib/agent/runLock";
 import { getLatestAsset } from "@/lib/agent/assetGenerator";
 import { buildEmailActionUrl, createEmailActionTokens } from "@/lib/agent/emailActions";
-import { renderAssetReviewEmail, renderContentReviewEmail, loadAssetInlineImage, type RenderedEmail } from "@/lib/agent/emailTemplates";
+import { renderAssetReviewEmail, renderContentReviewEmail, loadAssetInlineImage, loadCarouselInlineImages, type RenderedEmail } from "@/lib/agent/emailTemplates";
 import { checkFinalSocialCaption } from "@/lib/agent/finalCaption";
 
 // AlexAgent — Email HITL Phase 2B: preparing an ACTIONABLE review email.
@@ -231,7 +231,8 @@ export async function prepareAssetReviewNotification(
       draft,
       asset,
       planObjective: await loadPlanObjective(db, draft),
-      image: await loadAssetInlineImage(storage, asset),
+      image: asset.format === "carousel" ? null : await loadAssetInlineImage(storage, asset),
+      slideImages: asset.format === "carousel" ? await loadCarouselInlineImages(storage, asset) : null,
       approveAssetUrl: buildEmailActionUrl(params.baseUrl, tokens.approve_asset!),
     });
     return { status: "prepared", notificationId: claim.row.id, idempotencyKey: idempotencyKeyFor(claim.row), email };

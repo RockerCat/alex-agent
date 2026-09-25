@@ -157,7 +157,16 @@ export type AgentQuestionRow = {
 }
 
 export type AssetStatus = "pending_review" | "ready_to_publish" | "generation_failed";
-export type AssetFormat = "image_post";
+export type AssetFormat = "image_post" | "carousel";
+
+/** One ordered slide image of a carousel asset (content_assets.slides, migration 0014). Array order is authoritative. */
+export type CarouselSlideRecord = {
+  position: number;
+  storage_path: string;
+  width: number;
+  height: number;
+  mime_type: string;
+};
 
 export type ContentAssetRow = {
   id: string;
@@ -173,6 +182,8 @@ export type ContentAssetRow = {
   storage_bucket: string | null;
   storage_path: string | null;
   render_provenance: Record<string, unknown>;
+  /** Ordered slide images for format 'carousel'; always [] for image_post. */
+  slides: CarouselSlideRecord[];
   error_message: string | null;
   created_at: string;
   approved_at: string | null;

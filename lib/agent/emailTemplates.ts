@@ -51,8 +51,10 @@ export interface AssetReviewEmailInput {
   draft: ContentDraftRow;
   asset: ContentAssetRow;
   planObjective?: string | null;
-  /** From loadAssetInlineImage(); null renders a "no image available" notice instead of an image. */
+  /** From loadAssetInlineImage(); null renders a "no image available" notice instead of an image. Unused for a carousel asset. */
   image: EmailInlineAttachment | null;
+  /** For a carousel asset: every slide image, in the asset's authoritative slide order (loadCarouselInlineImages()). */
+  slideImages?: EmailInlineAttachment[] | null;
   /** Secure, version-bound asset approval URL; omitted/null renders the non-functional placeholder. */
   approveAssetUrl?: string | null;
 }
@@ -309,14 +311,54 @@ export function renderContentReviewEmail(input: ContentReviewEmailInput): Render
 // final caption for the draft's single destination channel, pending review)
 // ---------------------------------------------------------------------
 
+const isCarouselAsset = (asset: ContentAssetRow) => asset.format === "carousel";
+
+/**
+ * Every slide of a carousel asset, in publication order: "Diapositiva
+ * i/N", the exact image, and the approved text drawn on it (plus the CTA
+ * button on the last slide). One section — the carousel is approved once.
+ */
+function carouselSlidesSection(input: AssetReviewEmailInput): Section {
+  const { draft, asset } = input;
+  const records = asset.slides ?? [];
+  const images = input.slideImages ?? [];
+  const texts = new Map(slidesOf(draft).map((s) => [s.slide, s.text]));
+  const total = records.length;
+  const { label: ctaLabel } = resolveCtaLabelAndUrl(draft);
+  const html: string[] = [`<h2 style="font-size:16px;margin:24px 0 8px">Carrusel (${total} imágenes, en el orden en que se publicarán)</h2>`];
+  const text: string[] = [`== Carrusel (${total} imágenes, en el orden en que se publicarán) ==`];
+  records.forEach((record, i) => {
+    const heading = `Diapositiva ${record.position}/${total}`;
+    const slideText = texts.get(record.position) ?? "";
+    const cta = record.position === total && nonEmpty(ctaLabel) ? ctaLabel : null;
+    const image = images[i];
+    html.push(
+      `<h3 style="font-size:14px;margin:20px 0 6px">${escapeHtml(heading)}</h3>` +
+        (image
+          ? `<img src="cid:${escapeHtml(image.contentId)}" width="432" height="540" alt="${escapeHtml(`${heading} — ${displayTitle(draft)}`)}" style="display:block;max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px">`
+          : `<p style="font-size:14px;color:#a33">Imagen no disponible.</p>`) +
+        `<div style="font-size:13px;color:#333;margin:6px 0 0;white-space:pre-wrap"><strong>Texto en la imagen:</strong> ${escapeHtml(slideText)}</div>` +
+        (cta ? `<div style="font-size:13px;color:#333;margin:2px 0 0"><strong>Botón (CTA):</strong> ${escapeHtml(cta)}</div>` : "")
+    );
+    text.push(
+      `-- ${heading} --\n` +
+        (image ? `Imagen: adjunta en línea (${image.filename}).` : "Imagen: no disponible.") +
+        `\nTexto en la imagen: ${slideText}` +
+        (cta ? `\nBotón (CTA): ${cta}` : "")
+    );
+  });
+  return { html: html.join(""), text: text.join("\n\n") };
+}
+
 function assetImageSection(input: AssetReviewEmailInput): Section {
   const { draft, asset, image } = input;
+  if (isCarouselAsset(asset)) return carouselSlidesSection(input);
   if (draft.content_type === "carousel") {
-    // Current product capability: carousel slide images are never
-    // generated (content_assets.format is image_post only).
+    // Defensive: a carousel draft whose asset is not a carousel asset has
+    // no slide images to show — never present a single image as the carousel.
     return {
-      html: `<p style="font-size:14px;color:#555">Las imágenes de carrusel aún no se generan en AlexAgent; abajo se muestran solo los textos de las diapositivas.</p>`,
-      text: "Imagen: las imágenes de carrusel aún no se generan en AlexAgent; se muestran solo los textos de las diapositivas.",
+      html: `<p style="font-size:14px;color:#555">Esta versión no contiene las imágenes del carrusel; abajo se muestran solo los textos de las diapositivas.</p>`,
+      text: "Imagen: esta versión no contiene las imágenes del carrusel; se muestran solo los textos de las diapositivas.",
     };
   }
   if (!image) {
@@ -364,9 +406,9 @@ function finalCaptionSection(draft: ContentDraftRow): Section {
   };
 }
 
-/** What the image renderer draws onto the image itself (assetRenderer.ts: draft.hook + CTA label). */
-function textInImageSection(draft: ContentDraftRow): Section | null {
-  if (draft.content_type === "carousel") return null;
+/** What the image renderer draws onto the image itself (assetRenderer.ts: draft.hook + CTA label). A carousel shows this per slide instead. */
+function textInImageSection(draft: ContentDraftRow, asset: ContentAssetRow): Section | null {
+  if (draft.content_type === "carousel" || isCarouselAsset(asset)) return null;
   const { label } = resolveCtaLabelAndUrl(draft);
   const rows = [field("Titular", draft.hook), field("Botón (CTA)", nonEmpty(label) ? label : null)];
   if (rows.every((r) => r === null)) return null;
@@ -376,13 +418,20 @@ function textInImageSection(draft: ContentDraftRow): Section | null {
 export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEmailWithAttachments {
   const { brandDisplayName, draft, asset } = input;
   const channel = CHANNEL_LABELS[draft.channel] ?? draft.channel;
+  const carousel = isCarouselAsset(asset);
+  const slideCount = (asset.slides ?? []).length;
   const title = `Pieza lista para publicar — ${brandDisplayName}`;
-  const intro = `AlexAgent preparó la pieza final para ${channel}: esta imagen y este texto exactos (contenido v${draft.version}, imagen v${asset.asset_version}). Si estás de acuerdo, aprueba la publicación.`;
+  const intro = carousel
+    ? `AlexAgent preparó el carrusel final para ${channel}: estas ${slideCount} imágenes, en este orden, y este texto exactos (contenido v${draft.version}, carrusel v${asset.asset_version}). Si estás de acuerdo, aprueba la publicación una sola vez.`
+    : `AlexAgent preparó la pieza final para ${channel}: esta imagen y este texto exactos (contenido v${draft.version}, imagen v${asset.asset_version}). Si estás de acuerdo, aprueba la publicación.`;
 
-  const assetFields: (Section | null)[] = [
-    field("Versión de la imagen", `v${asset.asset_version}`),
-    field("Generada desde el contenido", `v${asset.source_draft_version}`),
-  ];
+  const assetFields: (Section | null)[] = carousel
+    ? [
+        field("Versión del carrusel", `v${asset.asset_version}`),
+        field("Imágenes", `${slideCount}`),
+        field("Generado desde el contenido", `v${asset.source_draft_version}`),
+      ]
+    : [field("Versión de la imagen", `v${asset.asset_version}`), field("Generada desde el contenido", `v${asset.source_draft_version}`)];
   const versionMismatch: Section | null =
     asset.source_draft_version !== draft.version
       ? {
@@ -391,29 +440,37 @@ export function renderAssetReviewEmail(input: AssetReviewEmailInput): RenderedEm
         }
       : null;
 
-  const publicationNote = `"Aprobar publicación" autoriza únicamente ${channel}, con esta imagen y este texto exactos. Al confirmar, AlexAgent la publicará automáticamente en ${channel}; no se pedirá otra aprobación.`;
+  const publicationNote = carousel
+    ? `"Aprobar publicación" autoriza únicamente ${channel}, con este carrusel exacto (${slideCount} imágenes en este orden) y este texto. Al confirmar, AlexAgent lo publicará automáticamente como UNA sola publicación en ${channel}; no se pedirá otra aprobación.`
+    : `"Aprobar publicación" autoriza únicamente ${channel}, con esta imagen y este texto exactos. Al confirmar, AlexAgent la publicará automáticamente en ${channel}; no se pedirá otra aprobación.`;
 
   const { html, text } = wrapDocument(title, intro, [
     destinationSection(draft),
     assetImageSection(input),
     versionMismatch,
     finalCaptionSection(draft),
-    textInImageSection(draft),
-    draft.content_type === "carousel" ? slidesSection(draft) : null,
+    textInImageSection(draft, asset),
+    draft.content_type === "carousel" && !carousel ? slidesSection(draft) : null,
     contextSection(input, assetFields),
     input.approveAssetUrl
       ? actionsSection([{ label: "Aprobar publicación", url: input.approveAssetUrl, background: "#15803d" }], `${publicationNote} ${REQUEST_CHANGES_PENDING_NOTE}`)
       : pendingActionsSection(),
   ]);
 
-  const includeImage = draft.content_type !== "carousel" && input.image !== null;
+  const inlineAttachments = carousel
+    ? (input.slideImages ?? [])
+    : draft.content_type !== "carousel" && input.image
+      ? [input.image]
+      : [];
   return {
     subject: sanitizeSubject(
-      `[${brandDisplayName}] Pieza lista para publicar en ${channel}: ${displayTitle(draft)} (contenido v${draft.version}, imagen v${asset.asset_version})`
+      carousel
+        ? `[${brandDisplayName}] Carrusel listo para publicar en ${channel}: ${displayTitle(draft)} (contenido v${draft.version}, carrusel v${asset.asset_version})`
+        : `[${brandDisplayName}] Pieza lista para publicar en ${channel}: ${displayTitle(draft)} (contenido v${draft.version}, imagen v${asset.asset_version})`
     ),
     html,
     text,
-    inlineAttachments: includeImage && input.image ? [input.image] : [],
+    inlineAttachments,
   };
 }
 
@@ -450,4 +507,25 @@ export async function loadAssetInlineImage(storage: AssetStorage, asset: Content
   } catch {
     return null;
   }
+}
+
+/**
+ * Every slide image of a carousel asset, in its authoritative order, as
+ * CID inline attachments (brand + asset version + position only — no
+ * internal ids or paths). Throws if ANY slide can't be read: a carousel
+ * review must never go out incomplete (the caller marks the notification
+ * failed and a later attempt retries without regenerating anything).
+ */
+export async function loadCarouselInlineImages(storage: AssetStorage, asset: ContentAssetRow): Promise<EmailInlineAttachment[]> {
+  const brandSlug = asset.brand.replace(/[^A-Za-z0-9-]/g, "") || "asset";
+  const slides = asset.slides ?? [];
+  if (slides.length === 0) throw new Error("Carousel asset has no stored slides.");
+  return Promise.all(
+    slides.map(async (slide) => ({
+      contentId: `${brandSlug}-carousel-v${asset.asset_version}-slide-${slide.position}`,
+      filename: `${brandSlug}-carousel-v${asset.asset_version}-slide-${slide.position}.${extensionFor(slide.mime_type)}`,
+      contentType: slide.mime_type,
+      content: await storage.download(slide.storage_path),
+    }))
+  );
 }

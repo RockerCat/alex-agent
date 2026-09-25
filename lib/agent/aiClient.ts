@@ -7,6 +7,8 @@ import {
   executorOutputSchema,
   assetFeedbackInterpretationSchema,
   visualDirectorOutputSchema,
+  carouselVisualDirectorOutputSchema,
+  type CarouselVisualPlan,
   type PlannerOutput,
   type ExecutorOutput,
   type AssetFeedbackInterpretation,
@@ -83,6 +85,14 @@ export interface VisualDirectorCallResult {
   incomplete?: { reason: string };
 }
 
+/** Same call shape as runVisualDirector, with the carousel plan as its bounded output (one call per whole carousel). */
+export interface CarouselVisualDirectorCallResult {
+  output?: CarouselVisualPlan;
+  usage: UsageTokens;
+  model: string;
+  incomplete?: { reason: string };
+}
+
 /**
  * Thin seam between the agent runtime and the model provider. Production
  * code uses OpenAiClient; tests inject a scripted fake so Planner/Executor
@@ -95,6 +105,7 @@ export interface AiClient {
   runExecutor(input: ExecutorCallInput): Promise<ExecutorCallResult>;
   runAssetFeedbackInterpreter(input: AssetFeedbackCallInput): Promise<AssetFeedbackCallResult>;
   runVisualDirector(input: VisualDirectorCallInput): Promise<VisualDirectorCallResult>;
+  runCarouselVisualDirector(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult>;
 }
 
 // Generous headroom above what EXECUTOR_TEXT_LIMITS (lib/agent/schemas.ts)
@@ -121,6 +132,9 @@ const ASSET_FEEDBACK_MAX_OUTPUT_TOKENS = 700;
 // generativeSceneDescription 500, rationale 400 chars) — sized with
 // headroom for all four at their ceiling plus enum/JSON overhead.
 const VISUAL_DIRECTOR_MAX_OUTPUT_TOKENS = 1600;
+// A carousel plan carries up to CAROUSEL_MAX_SLIDES bounded slide plans on
+// top of the single-image plan's fields.
+const CAROUSEL_VISUAL_DIRECTOR_MAX_OUTPUT_TOKENS = 4000;
 
 function usageFromResponse(
   usage:
@@ -298,5 +312,30 @@ export class OpenAiClient implements AiClient {
       usage,
       model,
     };
+  }
+
+  async runCarouselVisualDirector(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult> {
+    // Identical configuration to runVisualDirector — only the bounded
+    // output schema differs (carousel-level plan + ordered slidePlans).
+    const model = env.executorModel();
+    const response = await this.client.responses.parse({
+      model,
+      max_output_tokens: CAROUSEL_VISUAL_DIRECTOR_MAX_OUTPUT_TOKENS,
+      input: [
+        { role: "system", content: input.systemPrompt },
+        { role: "user", content: input.userPrompt },
+      ],
+      text: { format: zodTextFormat(carouselVisualDirectorOutputSchema, "carousel_visual_plan") },
+    });
+
+    const usage = usageFromResponse(response.usage);
+    if (response.status === "incomplete") {
+      return { usage, model, incomplete: { reason: response.incomplete_details?.reason ?? "unknown" } };
+    }
+    const parsed = response.output_parsed;
+    if (!parsed) {
+      throw new Error("Carousel Visual Director response did not contain parsed structured output");
+    }
+    return { output: parsed, usage, model };
   }
 }

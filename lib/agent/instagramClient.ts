@@ -12,8 +12,9 @@ import { env } from "@/lib/env";
 // This client does not create the signed image URL Meta needs — that
 // remains the responsibility of the later publication service (see
 // SupabaseAssetStorage.createSignedUrl). It also does not implement
-// publishAssetToInstagram, retries, or carousel/Stories/Reels support —
-// single-image image_post only, for this checkpoint. Bounded
+// publishAssetToInstagram, retries, or Stories/Reels support. Carousels
+// (Instagram carousel v1) use createCarouselItemContainer per slide, then
+// createCarouselContainer, then the same publishMediaContainer. Bounded
 // container-status polling between create and publish lives in
 // lib/agent/publish.ts, driving this client's getMediaContainerStatus().
 //
@@ -77,8 +78,24 @@ export interface InstagramContainerStatusResult {
   statusCode: InstagramContainerStatusCode;
 }
 
+export interface InstagramCarouselItemInput {
+  /** Temporary HTTPS URL Meta fetches the slide image (JPEG) from. */
+  imageUrl: string;
+}
+
+export interface InstagramCarouselContainerInput {
+  /** Child (carousel item) container ids, in exact publication order. */
+  children: string[];
+  /** The final caption — carried by the parent container only (Meta: captions are not supported on carousel items). */
+  caption: string;
+}
+
 export interface InstagramGraphClient {
   createMediaContainer(input: InstagramCreateMediaInput): Promise<InstagramCreateMediaResult>;
+  /** Carousel item container: `is_carousel_item=true`, no caption. Never public on its own. */
+  createCarouselItemContainer(input: InstagramCarouselItemInput): Promise<InstagramCreateMediaResult>;
+  /** Parent carousel container: `media_type=CAROUSEL`, ordered `children`, caption. Not public until media_publish. */
+  createCarouselContainer(input: InstagramCarouselContainerInput): Promise<InstagramCreateMediaResult>;
   getMediaContainerStatus(containerId: string): Promise<InstagramContainerStatusResult>;
   publishMediaContainer(creationId: string): Promise<InstagramPublishMediaResult>;
 }
@@ -188,6 +205,37 @@ export class MetaGraphInstagramClient implements InstagramGraphClient {
     });
 
     const creationId = await this.post(`${accountId}/media`, params, "media container");
+    return { creationId };
+  }
+
+  async createCarouselItemContainer(input: InstagramCarouselItemInput): Promise<InstagramCreateMediaResult> {
+    const accountId = env.metaInstagramAccountId();
+    const accessToken = env.metaInstagramAccessToken();
+    if (!accountId || !accessToken) {
+      throw new InstagramPublishError("Meta Instagram configuration is missing.", { retrySafe: true });
+    }
+    const params = new URLSearchParams({
+      image_url: input.imageUrl,
+      is_carousel_item: "true",
+      access_token: accessToken,
+    });
+    const creationId = await this.post(`${accountId}/media`, params, "carousel item container");
+    return { creationId };
+  }
+
+  async createCarouselContainer(input: InstagramCarouselContainerInput): Promise<InstagramCreateMediaResult> {
+    const accountId = env.metaInstagramAccountId();
+    const accessToken = env.metaInstagramAccessToken();
+    if (!accountId || !accessToken) {
+      throw new InstagramPublishError("Meta Instagram configuration is missing.", { retrySafe: true });
+    }
+    const params = new URLSearchParams({
+      media_type: "CAROUSEL",
+      children: input.children.join(","),
+      caption: input.caption,
+      access_token: accessToken,
+    });
+    const creationId = await this.post(`${accountId}/media`, params, "carousel container");
     return { creationId };
   }
 

@@ -8,6 +8,7 @@ import type {
   AssetFeedbackCallResult,
   VisualDirectorCallInput,
   VisualDirectorCallResult,
+  CarouselVisualDirectorCallResult,
 } from "@/lib/agent/aiClient";
 import {
   EXECUTOR_TEXT_LIMITS,
@@ -17,6 +18,8 @@ import {
   type AssetRenderSpec,
   type AssetFeedbackInterpretation,
   type VisualCreativePlan,
+  type CarouselVisualPlan,
+  type CarouselSlidePlan,
 } from "@/lib/agent/schemas";
 
 /**
@@ -66,8 +69,13 @@ export class ScriptedAiClient implements AiClient {
     private assetFeedbackQueue: AssetFeedbackInterpretation[] = [
       { renderSpec: DEFAULT_RENDER_SPEC, appliedChanges: [], unsupportedRequests: [] },
     ],
-    private visualDirectorQueue: VisualCreativePlan[] = [defaultVisualPlan()]
+    private visualDirectorQueue: VisualCreativePlan[] = [defaultVisualPlan()],
+    private carouselVisualDirectorQueue: CarouselVisualPlan[] = []
   ) {}
+
+  carouselVisualDirectorCalls: VisualDirectorCallInput[] = [];
+  /** When > 0, the next runCarouselVisualDirector call throws (technical failure). */
+  failNextCarouselVisualDirectorCalls = 0;
 
   async runPlanner(input: PlannerCallInput): Promise<AiCallResult<PlannerOutput>> {
     this.plannerCalls.push(input);
@@ -126,6 +134,46 @@ export class ScriptedAiClient implements AiClient {
     if (!output) throw new Error("ScriptedAiClient: no visual director output queued");
     return { output, usage, model };
   }
+
+  async runCarouselVisualDirector(input: VisualDirectorCallInput): Promise<CarouselVisualDirectorCallResult> {
+    this.carouselVisualDirectorCalls.push(input);
+    if (this.failNextCarouselVisualDirectorCalls > 0) {
+      this.failNextCarouselVisualDirectorCalls -= 1;
+      throw new Error("Simulated technical failure calling the carousel Visual Director.");
+    }
+    const usage = { inputTokens: 900, cachedInputTokens: 0, outputTokens: 500 };
+    const model = "test-executor-model";
+    const output = this.carouselVisualDirectorQueue.length > 1 ? this.carouselVisualDirectorQueue.shift()! : this.carouselVisualDirectorQueue[0];
+    if (!output) throw new Error("ScriptedAiClient: no carousel visual director output queued");
+    return { output, usage, model };
+  }
+}
+
+/** Test convenience: a valid carousel plan with one slide plan per strategy given (slide numbers 1..N in order). */
+export function carouselPlan(
+  strategies: CarouselSlidePlan["strategy"][],
+  overrides: Partial<CarouselVisualPlan> = {}
+): CarouselVisualPlan {
+  return {
+    creativeConcept: "Recorrido visual coherente de la propuesta, de la información técnica al resultado.",
+    communicationGoal: "Mostrar el resultado profesional que el instalador puede presentar.",
+    renderSpec: DEFAULT_RENDER_SPEC,
+    rationale: "El carrusel avanza de la idea a la evidencia real del producto.",
+    varietyRationale: "Combina tipografía y evidencia real, distinto de las piezas recientes.",
+    slidePlans: strategies.map((strategy, i) => ({
+      slideNumber: i + 1,
+      strategy,
+      verifiedSourceCategory: strategy === "product_ui" ? "product_screenshot" : strategy === "proposal_document" ? "proposal_example" : "none",
+      compositionIntent:
+        strategy === "product_ui" || strategy === "proposal_document"
+          ? "verified_dominant"
+          : strategy === "branded_graphic"
+            ? "graphic_text_dominant"
+            : "generated_dominant",
+      generativeSceneDescription: strategy.startsWith("generated_") ? `Escena ${i + 1}: un instalador solar revisando un proyecto.` : null,
+    })),
+    ...overrides,
+  };
 }
 
 /** Test convenience: a valid, minimal VisualCreativePlan with sensible defaults, overridable per field. */
