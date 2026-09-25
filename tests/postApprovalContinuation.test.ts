@@ -5,6 +5,7 @@ import {
   continueApprovedImagePost,
   runPostApprovalContinuationSweep,
   runContinuationSafely,
+  runRegeneratedAssetReviewSafely,
   type ContinuationDeps,
 } from "@/lib/agent/postApprovalContinuation";
 import { generateAsset } from "@/lib/agent/assetGenerator";
@@ -360,6 +361,111 @@ describe("runContinuationSafely", () => {
     const h = setup();
     const broken = { ...h.deps, db: { from: () => { throw new Error("db down"); } } as unknown as ContinuationDeps["db"] };
     await expect(runContinuationSafely(DRAFT_ID, () => broken)).resolves.toBeUndefined();
+  });
+});
+
+// Real production incident (2026-09-25): a finished-publication asset v1
+// had to be regenerated (renderer fix), and the v2 review email would
+// only have gone out on the next daily cron sweep. Dashboard Regenerate
+// now triggers the same canonical continuation right away.
+describe("runRegeneratedAssetReviewSafely — dashboard Regenerate → immediate review email", () => {
+  /** v1 through the real email lifecycle (first generation + review email), then a dashboard Regenerate → v2. */
+  async function regenerateAfterEmailReview(h: Harness) {
+    expect((await continueApprovedImagePost(h.deps, DRAFT_ID)).status).toBe("review_sent");
+    const regenerated = await generateAsset({
+      db: h.deps.db,
+      storage: h.storage,
+      draftId: DRAFT_ID,
+      aiClient: h.deps.aiClient,
+      imageGenerationClient: h.deps.imageGenerationClient,
+    });
+    expect(regenerated).toMatchObject({ status: "success", asset: { asset_version: 2, status: "pending_review" } });
+    return regenerated.asset!;
+  }
+  const tokenIn = (text: string) => text.match(/#t=([A-Za-z0-9_-]{43})/)![1];
+
+  it("sends the v2 review email right away, with zero paid calls, and keeps v1 as history", async () => {
+    const h = setup();
+    const v2 = await regenerateAfterEmailReview(h);
+    const v1Before = { ...assets(h).find((a) => a.asset_version === 1)! };
+
+    await runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps);
+
+    expect(paidCalls(h)).toEqual({ director: 1, image: 1 }); // only v1's first generation ever paid
+    expect(assets(h)).toHaveLength(2);
+    expect(assets(h).find((a) => a.asset_version === 1)).toEqual(v1Before);
+    expect(h.emailClient.sendCalls).toHaveLength(2);
+    expect(h.emailClient.sendCalls[1].subject).toContain("Pieza lista para publicar");
+    expect(assetReviewRows(h).map((r) => [r.subject_id, r.subject_version, r.status])).toEqual([
+      [v1Before.id, 1, "sent"],
+      [v2.id, 2, "sent"],
+    ]);
+    expect(h.fake.getAll("email_action_tokens").filter((t) => t.action === "approve_asset").map((t) => [t.subject_id, t.subject_version])).toEqual([
+      [v1Before.id, 1],
+      [v2.id, 2],
+    ]);
+  });
+
+  it("the old v1 approval link can no longer approve anything; v2's own link can", async () => {
+    const h = setup();
+    await regenerateAfterEmailReview(h);
+    await runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps);
+    const [v1Email, v2Email] = h.emailClient.sendCalls;
+
+    expect((await confirmEmailAction(h.deps.db, tokenIn(v1Email.text))).result).toBe("stale");
+    expect(assets(h).map((a) => [a.asset_version, a.status])).toEqual([
+      [1, "pending_review"],
+      [2, "pending_review"],
+    ]);
+    expect(h.fake.getAll("email_action_tokens").some((t) => t.subject_version === 1 && t.outcome === "applied" && t.action === "approve_asset")).toBe(false);
+
+    expect((await confirmEmailAction(h.deps.db, tokenIn(v2Email.text))).result).toBe("applied");
+    expect(assets(h).map((a) => [a.asset_version, a.status])).toEqual([
+      [1, "pending_review"],
+      [2, "ready_to_publish"],
+    ]);
+    expect(h.fake.getAll("asset_publications")).toHaveLength(0); // approval never publishes by itself here
+  });
+
+  it("is idempotent: a repeated call never re-sends or regenerates", async () => {
+    const h = setup();
+    await regenerateAfterEmailReview(h);
+    await runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps);
+    await runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps);
+    expect(h.emailClient.sendCalls).toHaveLength(2);
+    expect(assets(h)).toHaveLength(2);
+  });
+
+  it("a dashboard-only draft is never switched to email review by regenerating", async () => {
+    const h = setup({ outbox: [] }); // content was reviewed only in the dashboard
+    seedAsset(h);
+    await generateAsset({ db: h.deps.db, storage: h.storage, draftId: DRAFT_ID });
+    await runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps);
+    expect(assets(h)).toHaveLength(2);
+    expect(h.emailClient.sendCalls).toHaveLength(0);
+    expect(h.fake.getAll("email_action_tokens")).toHaveLength(0);
+  });
+
+  it("a delivery failure keeps v2 intact and the cron sweep later sends it WITHOUT regenerating", async () => {
+    const emailClient = new ScriptedEmailClient({ failSequence: [null, emailRejection("Resend rejected the email send request: boom"), null] });
+    const h = setup({ emailClient });
+    const v2 = await regenerateAfterEmailReview(h);
+
+    await expect(runRegeneratedAssetReviewSafely(DRAFT_ID, () => h.deps)).resolves.toBeUndefined();
+    expect(assets(h).find((a) => a.id === v2.id)!.status).toBe("pending_review");
+    expect(assetReviewRows(h).find((r) => r.subject_id === v2.id)!.status).toBe("failed");
+
+    expect((await runPostApprovalContinuationSweep(h.deps)).outcomes).toEqual(["review_sent"]);
+    expect(assets(h)).toHaveLength(2);
+    expect(paidCalls(h)).toEqual({ director: 1, image: 1 });
+    expect(assetReviewRows(h).find((r) => r.subject_id === v2.id)!.status).toBe("sent");
+  });
+
+  it("never throws: unconfigured email/app origin, or a crashing dependency", async () => {
+    await expect(runRegeneratedAssetReviewSafely(DRAFT_ID, () => null)).resolves.toBeUndefined();
+    const h = setup();
+    const broken = { ...h.deps, db: { from: () => { throw new Error("db down"); } } as unknown as ContinuationDeps["db"] };
+    await expect(runRegeneratedAssetReviewSafely(DRAFT_ID, () => broken)).resolves.toBeUndefined();
   });
 });
 

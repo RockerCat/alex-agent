@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { requireSession } from "@/lib/supabase/server";
 import { OpenAiClient } from "@/lib/agent/aiClient";
@@ -11,6 +12,7 @@ import { answerQuestion } from "@/lib/agent/questions";
 import { generateAsset, approveAsset } from "@/lib/agent/assetGenerator";
 import { requestAssetChanges } from "@/lib/agent/assetRevision";
 import { SupabaseAssetStorage } from "@/lib/agent/assetStorage";
+import { runRegeneratedAssetReviewSafely } from "@/lib/agent/postApprovalContinuation";
 import { OpenAiImageGenerationClient } from "@/lib/agent/imageGenerationClient";
 import { publishAssetToFacebook, publishAssetToInstagram } from "@/lib/agent/publish";
 import { MetaGraphFacebookClient } from "@/lib/agent/facebookClient";
@@ -135,6 +137,15 @@ export async function generateAssetAction(draftId: string) {
   const imageGenerationClient = new OpenAiImageGenerationClient();
   const result = await generateAsset({ db, storage, draftId, aiClient, imageGenerationClient });
   revalidatePath(`/approvals/${draftId}`);
+  // A successfully generated/regenerated asset of an email-lifecycle
+  // draft gets its finished-publication review email now, post-response,
+  // through the canonical continuation — not a second email path, and the
+  // same email the next cron sweep would otherwise send. A delivery
+  // failure never touches the new asset; the sweep retries the email
+  // without regenerating.
+  if (result.status === "success") {
+    after(() => runRegeneratedAssetReviewSafely(draftId));
+  }
   return result;
 }
 

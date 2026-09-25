@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { selectProductScreenshot, type ScreenshotMeta } from "@/lib/agent/productScreenshots";
 import { selectProposalExample, type ProposalExampleMeta } from "@/lib/agent/proposalExamples";
 import { DEFAULT_RENDER_SPEC, type AssetRenderSpec, type VisualStrategy } from "@/lib/agent/schemas";
+import { BUNDLED_FONT_NAME, outlineText, TextOutlineError, type OutlinedTextOptions } from "@/lib/agent/textOutline";
 
 // AlexAgent v0.2 — first vertical slice. Deterministic SVG composition
 // rasterized by Sharp, with the real official logo PNG composited on
@@ -36,7 +37,13 @@ const NEUTRAL = "#E5E7EB"; // verified in VISUAL_IDENTITY.md's confirmed palette
 
 const MARGIN_X = 64;
 const CONTENT_WIDTH = IMAGE_POST_WIDTH - MARGIN_X * 2; // 952
-const FONT_STACK = "Arial, Helvetica, sans-serif"; // see report: Inter is not guaranteed present server-side; BRAND.md/VISUAL_IDENTITY.md already tolerate "Inter or a similar sans-serif".
+// All renderer-owned text is drawn as vector outlines from a bundled
+// font (see lib/agent/textOutline.ts) — never as live SVG <text>, which
+// depends on host fonts that the production runtime does not have.
+// Liberation Sans is metric-compatible with Arial, the font this
+// renderer's wrap/fit heuristics below were tuned against;
+// BRAND.md/VISUAL_IDENTITY.md already tolerate "Inter or a similar sans-serif".
+const TYPOGRAPHY_PROVENANCE = { method: "outlined-paths", font: BUNDLED_FONT_NAME } as const;
 
 // Official logo asset used for compositing — chosen because its "Solar"
 // wordmark renders in a light tone, making it the variant with correct
@@ -62,13 +69,20 @@ interface WrapResult {
   fontSize: number;
 }
 
-function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+/** outlineText, with a missing glyph / unloadable font surfaced as this renderer's own AssetRenderError (fail closed — nothing is rendered or stored). */
+async function outlineOrFail(options: OutlinedTextOptions): Promise<string> {
+  try {
+    return await outlineText(options);
+  } catch (err) {
+    if (err instanceof TextOutlineError) throw new AssetRenderError(err.message);
+    throw err;
+  }
+}
+
+/** Baseline-positioned lines for a headline wrapped by wrapToFit, centered on the canvas — same geometry the previous <text>/<tspan dy> markup produced. */
+function headlineLines(wrap: WrapResult, topY: number): OutlinedTextOptions["lines"] {
+  const lineHeight = wrap.fontSize * 1.25;
+  return wrap.lines.map((text, i) => ({ text, x: IMAGE_POST_WIDTH / 2, y: topY + i * lineHeight }));
 }
 
 /**
@@ -577,13 +591,13 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
   const ctaY = usesProposalLayout ? PROPOSAL_CTA_Y : usesProductLayout ? PRODUCT_CTA_Y : theme.ctaY;
   const logoY = usesProposalLayout ? PROPOSAL_LOGO_Y : usesProductLayout ? PRODUCT_LOGO_Y : theme.logoY;
 
-  const lineHeight = headlineWrap.fontSize * 1.25;
-  const headlineLinesSvg = headlineWrap.lines
-    .map(
-      (line, i) =>
-        `<tspan x="${IMAGE_POST_WIDTH / 2}" dy="${i === 0 ? 0 : lineHeight}">${escapeXml(line)}</tspan>`
-    )
-    .join("");
+  const headlineSvg = await outlineOrFail({
+    label: "approved headline",
+    lines: headlineLines(headlineWrap, headlineY),
+    weight: "bold",
+    fontSize: headlineWrap.fontSize,
+    fill: WHITE,
+  });
 
   let cardSvg = "";
   let screenshotTop = 0;
@@ -630,33 +644,29 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     const stackOuterBottom = page2 ? page2Y + page2.height + m : page1Y + page1.height + m;
     const disclosurePreset = DISCLOSURE_PRESETS[spec.disclosureEmphasis];
     const disclosureY = stackOuterBottom + PROPOSAL_DISCLOSURE_GAP;
-    disclosureSvg = `
-      <text
-        x="${IMAGE_POST_WIDTH / 2}"
-        y="${disclosureY}"
-        text-anchor="middle"
-        font-family="${FONT_STACK}"
-        font-weight="normal"
-        font-size="${disclosurePreset.fontSize}"
-        fill="${WHITE}"
-        fill-opacity="${disclosurePreset.opacity}"
-      >${escapeXml(PROPOSAL_DISCLOSURE_TEXT)}</text>
-    `;
+    disclosureSvg = await outlineOrFail({
+      label: "proposal disclosure",
+      lines: [{ text: PROPOSAL_DISCLOSURE_TEXT, x: IMAGE_POST_WIDTH / 2, y: disclosureY }],
+      weight: "regular",
+      fontSize: disclosurePreset.fontSize,
+      fill: WHITE,
+      fillOpacity: disclosurePreset.opacity,
+    });
   }
+
+  const ctaSvg = await outlineOrFail({
+    label: "approved CTA",
+    lines: [{ text: ctaLine, x: IMAGE_POST_WIDTH / 2, y: ctaY + ctaFontSize * 0.32 }],
+    weight: "bold",
+    fontSize: ctaFontSize,
+    fill: NAVY,
+  });
 
   const svg = `
     <svg width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
       <rect x="0" y="0" width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT}" fill="${NAVY}" />
       ${accentBarSvg}
-      <text
-        x="${IMAGE_POST_WIDTH / 2}"
-        y="${headlineY}"
-        text-anchor="middle"
-        font-family="${FONT_STACK}"
-        font-weight="bold"
-        font-size="${headlineWrap.fontSize}"
-        fill="${WHITE}"
-      >${headlineLinesSvg}</text>
+      ${headlineSvg}
       ${cardSvg}
       ${proposalSvg}
       ${disclosureSvg}
@@ -668,15 +678,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
         rx="${ctaPillHeight / 2}"
         fill="${AMBER}"
       />
-      <text
-        x="${IMAGE_POST_WIDTH / 2}"
-        y="${ctaY + ctaFontSize * 0.32}"
-        text-anchor="middle"
-        font-family="${FONT_STACK}"
-        font-weight="bold"
-        font-size="${ctaFontSize}"
-        fill="${NAVY}"
-      >${escapeXml(ctaLine)}</text>
+      ${ctaSvg}
     </svg>
   `;
 
@@ -703,6 +705,7 @@ export async function renderImagePostAsset(input: RenderAssetInput): Promise<Ren
     height: IMAGE_POST_HEIGHT,
     provenance: {
       renderer: usesProposalLayout ? "svg-sharp-proposal-v1" : usesProductLayout ? "svg-sharp-product-v1" : "svg-sharp-v1",
+      typography: TYPOGRAPHY_PROVENANCE,
       theme: themeForVersion(input.assetVersion),
       renderSpec: spec,
       logoFile: LOGO_FILE,
@@ -794,26 +797,33 @@ async function renderHeroComposition(
       : `<rect x="0" y="${IMAGE_POST_HEIGHT - 24}" width="${IMAGE_POST_WIDTH}" height="24" fill="${AMBER}" />`;
 
   const scrimTopY = Math.round(IMAGE_POST_HEIGHT * HERO_SCRIM_TOP_RATIO);
-  const lineHeight = headlineWrap.fontSize * 1.25;
-  const headlineLinesSvg = headlineWrap.lines
-    .map((line, i) => `<tspan x="${IMAGE_POST_WIDTH / 2}" dy="${i === 0 ? 0 : lineHeight}">${escapeXml(line)}</tspan>`)
-    .join("");
+  const headlineSvg = await outlineOrFail({
+    label: "approved headline",
+    lines: headlineLines(headlineWrap, HERO_HEADLINE_TOP_Y),
+    weight: "bold",
+    fontSize: headlineWrap.fontSize,
+    fill: WHITE,
+  });
 
   const disclosurePreset = DISCLOSURE_PRESETS[spec.disclosureEmphasis];
   const disclosureSvg = showsProposalDisclosure
-    ? `
-    <text
-      x="${IMAGE_POST_WIDTH / 2}"
-      y="${HERO_HEADLINE_TOP_Y - 40}"
-      text-anchor="middle"
-      font-family="${FONT_STACK}"
-      font-weight="normal"
-      font-size="${disclosurePreset.fontSize}"
-      fill="${WHITE}"
-      fill-opacity="${disclosurePreset.opacity}"
-    >${escapeXml(PROPOSAL_DISCLOSURE_TEXT)}</text>
-    `
+    ? await outlineOrFail({
+        label: "proposal disclosure",
+        lines: [{ text: PROPOSAL_DISCLOSURE_TEXT, x: IMAGE_POST_WIDTH / 2, y: HERO_HEADLINE_TOP_Y - 40 }],
+        weight: "regular",
+        fontSize: disclosurePreset.fontSize,
+        fill: WHITE,
+        fillOpacity: disclosurePreset.opacity,
+      })
     : "";
+
+  const ctaSvg = await outlineOrFail({
+    label: "approved CTA",
+    lines: [{ text: ctaLine, x: IMAGE_POST_WIDTH / 2, y: HERO_CTA_Y + ctaFontSize * 0.32 }],
+    weight: "bold",
+    fontSize: ctaFontSize,
+    fill: NAVY,
+  });
 
   const logoWidth = Math.round(LOGO_WIDTH * LOGO_EMPHASIS_SCALE[spec.logoEmphasis]);
   const logoChipWidth = logoWidth + HERO_LOGO_CHIP_PADDING * 2;
@@ -834,15 +844,7 @@ async function renderHeroComposition(
       <rect x="0" y="${scrimTopY}" width="${IMAGE_POST_WIDTH}" height="${IMAGE_POST_HEIGHT - scrimTopY}" fill="url(#heroScrim)" />
       <rect x="${MARGIN_X - HERO_LOGO_CHIP_PADDING}" y="${HERO_LOGO_Y - HERO_LOGO_CHIP_PADDING}" width="${logoChipWidth}" height="${logoChipHeight}" rx="${HERO_LOGO_CHIP_RADIUS}" fill="${NAVY}" fill-opacity="0.72" />
       ${disclosureSvg}
-      <text
-        x="${IMAGE_POST_WIDTH / 2}"
-        y="${HERO_HEADLINE_TOP_Y}"
-        text-anchor="middle"
-        font-family="${FONT_STACK}"
-        font-weight="bold"
-        font-size="${headlineWrap.fontSize}"
-        fill="${WHITE}"
-      >${headlineLinesSvg}</text>
+      ${headlineSvg}
       <rect
         x="${(IMAGE_POST_WIDTH - ctaPillWidth) / 2}"
         y="${HERO_CTA_Y - ctaPillHeight / 2}"
@@ -851,15 +853,7 @@ async function renderHeroComposition(
         rx="${ctaPillHeight / 2}"
         fill="${AMBER}"
       />
-      <text
-        x="${IMAGE_POST_WIDTH / 2}"
-        y="${HERO_CTA_Y + ctaFontSize * 0.32}"
-        text-anchor="middle"
-        font-family="${FONT_STACK}"
-        font-weight="bold"
-        font-size="${ctaFontSize}"
-        fill="${NAVY}"
-      >${escapeXml(ctaLine)}</text>
+      ${ctaSvg}
     </svg>
   `;
 
@@ -887,6 +881,7 @@ async function renderHeroComposition(
     height: IMAGE_POST_HEIGHT,
     provenance: {
       renderer: "svg-sharp-hero-v1",
+      typography: TYPOGRAPHY_PROVENANCE,
       theme: themeForVersion(input.assetVersion),
       renderSpec: spec,
       logoFile: LOGO_FILE,

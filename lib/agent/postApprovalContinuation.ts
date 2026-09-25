@@ -153,6 +153,21 @@ export async function continueApprovedImagePost(deps: ContinuationDeps, draftId:
 
 const DEFAULT_SWEEP_LIMIT = 3;
 
+/** True when the draft's CURRENT version had its content review sent by email — i.e. it entered the email lifecycle. Dashboard-only drafts never did. */
+async function enteredEmailLifecycle(db: ContinuationDeps["db"], draft: { id: string; version: number }): Promise<boolean> {
+  const { data: enrolled } = await db
+    .from("notification_outbox")
+    .select("id")
+    .eq("channel", "email")
+    .eq("notification_type", "draft_pending_approval")
+    .eq("subject_type", "content_draft")
+    .eq("subject_id", draft.id)
+    .eq("subject_version", draft.version)
+    .eq("status", "sent")
+    .maybeSingle();
+  return !!enrolled;
+}
+
 /**
  * Cron catch-up (recovery only): continues approved image_post drafts
  * that ENTERED THE EMAIL LIFECYCLE — i.e. have a sent email content-review
@@ -186,17 +201,7 @@ export async function runPostApprovalContinuationSweep(
     // so it never starves other drafts and never triggers repeated work.
     if (!checkFinalSocialCaption(draft, draft.channel).ok) continue;
 
-    const { data: enrolled } = await deps.db
-      .from("notification_outbox")
-      .select("id")
-      .eq("channel", "email")
-      .eq("notification_type", "draft_pending_approval")
-      .eq("subject_type", "content_draft")
-      .eq("subject_id", draft.id)
-      .eq("subject_version", draft.version)
-      .eq("status", "sent")
-      .maybeSingle();
-    if (!enrolled) continue;
+    if (!(await enteredEmailLifecycle(deps.db, draft))) continue;
 
     // Cheap pre-filter so finished drafts never consume the per-run limit.
     const latest = await getLatestAsset(deps.db, draft.id);
@@ -263,5 +268,39 @@ export async function runContinuationSafely(draftId: string, depsFactory: () => 
     console.log(`Post-approval continuation: ${outcome.status}${outcome.status === "final_caption_invalid" ? ` — ${outcome.reason}` : ""}`);
   } catch (err) {
     console.error("Post-approval continuation crashed:", err instanceof Error ? err.message : "unknown error");
+  }
+}
+
+/**
+ * For post-response use after a dashboard Generate/Regenerate succeeded
+ * (app/actions.ts generateAssetAction): sends the new asset version's
+ * finished-publication review email right away instead of waiting for
+ * the next cron sweep. Same scope as the sweep —
+ * only drafts that entered the email lifecycle; a dashboard-only draft is
+ * never switched to email review by regenerating. Delegates to the
+ * canonical continueApprovedImagePost, so it never generates anything
+ * (the regenerated asset already exists), sends at most one email per
+ * asset version, and a delivery failure leaves the new asset intact for
+ * the sweep to retry. Never throws.
+ */
+export async function runRegeneratedAssetReviewSafely(
+  draftId: string,
+  depsFactory: () => ContinuationDeps | null = createProductionContinuationDeps
+): Promise<void> {
+  try {
+    const deps = depsFactory();
+    if (!deps) {
+      console.warn("Regenerated-asset review email skipped: outbound email or app origin is not configured.");
+      return;
+    }
+    const { data: draft } = await deps.db.from("content_drafts").select("id, version").eq("id", draftId).maybeSingle();
+    if (!draft || !(await enteredEmailLifecycle(deps.db, draft))) {
+      console.log("Regenerated-asset review email: not_eligible — draft is not in the email review lifecycle");
+      return;
+    }
+    const outcome = await continueApprovedImagePost(deps, draftId);
+    console.log(`Regenerated-asset review email: ${outcome.status}${outcome.status === "final_caption_invalid" ? ` — ${outcome.reason}` : ""}`);
+  } catch (err) {
+    console.error("Regenerated-asset review email crashed:", err instanceof Error ? err.message : "unknown error");
   }
 }
